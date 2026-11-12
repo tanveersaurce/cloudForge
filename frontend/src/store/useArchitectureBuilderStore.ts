@@ -18,10 +18,16 @@ import type {
   ArchitectureFlowEdge,
   ArchitectureFlowNode,
   ArchitectureNodeDto,
+  AwsResourceEdgeData,
   AwsResourceNodeData,
   AwsResourceRegistryItem,
+  PendingConnection,
+  RelationshipDirection,
+  RelationshipMetadata,
+  RelationshipType,
   SaveStatus,
 } from '@/features/architecture-builder/types/architecture.types';
+import { normalizeEdgeData } from '@/features/architecture-builder/utils/relationshipModel';
 
 interface GraphSnapshot {
   nodes: ArchitectureFlowNode[];
@@ -47,8 +53,8 @@ function toFlowEdges(edges: ArchitectureEdgeDto[]): ArchitectureFlowEdge[] {
     target: edge.target,
     sourceHandle: edge.sourceHandle ?? undefined,
     targetHandle: edge.targetHandle ?? undefined,
-    type: 'smoothstep',
-    data: edge.data ?? { relationshipType: 'traffic-flow' },
+    type: 'relationship',
+    data: normalizeEdgeData(edge.data),
   }));
 }
 
@@ -77,18 +83,23 @@ export function serializeFlowNodes(nodes: ArchitectureFlowNode[]): ArchitectureN
 }
 
 export function serializeFlowEdges(edges: ArchitectureFlowEdge[]): ArchitectureEdgeDto[] {
-  return edges.map((edge) => ({
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    sourceHandle: edge.sourceHandle ?? null,
-    targetHandle: edge.targetHandle ?? null,
-    type: 'smoothstep',
-    data: {
-      relationshipType: edge.data?.relationshipType ?? 'traffic-flow',
-      ...(edge.data?.label ? { label: edge.data.label } : {}),
-    },
-  }));
+  return edges.map((edge) => {
+    const normalized = normalizeEdgeData(edge.data);
+    return {
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      sourceHandle: edge.sourceHandle ?? null,
+      targetHandle: edge.targetHandle ?? null,
+      type: 'relationship',
+      data: {
+        relationshipType: normalized.relationshipType,
+        direction: normalized.direction,
+        ...(normalized.label ? { label: normalized.label } : {}),
+        metadata: normalized.metadata,
+      },
+    };
+  });
 }
 
 function createNodeId(): string {
@@ -103,6 +114,13 @@ function createEdgeId(source: string, target: string): string {
   return `edge-${source}-${target}-${suffix}`;
 }
 
+export interface ConfirmConnectionInput {
+  relationshipType: RelationshipType;
+  direction: RelationshipDirection;
+  label?: string;
+  metadata?: RelationshipMetadata;
+}
+
 interface ArchitectureBuilderState {
   architecture: ArchitectureDetailDto | null;
   nodes: ArchitectureFlowNode[];
@@ -110,6 +128,7 @@ interface ArchitectureBuilderState {
   viewport: Viewport;
   selectedNodeId: string | null;
   selectedEdgeId: string | null;
+  pendingConnection: PendingConnection | null;
   isDirty: boolean;
   saveStatus: SaveStatus;
   saveError: string | null;
@@ -127,6 +146,8 @@ interface ArchitectureBuilderState {
   onNodesChange: (changes: NodeChange<ArchitectureFlowNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<ArchitectureFlowEdge>[]) => void;
   onConnect: (connection: Connection) => void;
+  cancelPendingConnection: () => void;
+  confirmPendingConnection: (input: ConfirmConnectionInput) => ArchitectureFlowEdge | null;
   addResourceNode: (
     resource: AwsResourceRegistryItem,
     position?: { x: number; y: number },
@@ -135,6 +156,8 @@ interface ArchitectureBuilderState {
     nodeId: string,
     patch: Partial<Pick<AwsResourceNodeData, 'label' | 'description'>>,
   ) => void;
+  updateEdgeMetadata: (edgeId: string, patch: Partial<AwsResourceEdgeData>) => void;
+  reverseEdgeDirection: (edgeId: string) => void;
   duplicateNode: (nodeId: string) => void;
   deleteNode: (nodeId: string) => void;
   deleteEdge: (edgeId: string) => void;
@@ -151,7 +174,15 @@ function pushHistory(
 ): GraphSnapshot[] {
   const snapshot: GraphSnapshot = {
     nodes: nodes.map((n) => ({ ...n, position: { ...n.position }, data: { ...n.data } })),
-    edges: edges.map((e) => ({ ...e, data: e.data ? { ...e.data } : undefined })),
+    edges: edges.map((e) => ({
+      ...e,
+      data: e.data
+        ? {
+            ...e.data,
+            metadata: e.data.metadata ? { ...e.data.metadata } : undefined,
+          }
+        : undefined,
+    })),
   };
   const next = [...past, snapshot];
   return next.length > MAX_HISTORY ? next.slice(next.length - MAX_HISTORY) : next;
@@ -164,6 +195,7 @@ export const useArchitectureBuilderStore = create<ArchitectureBuilderState>((set
   viewport: DEFAULT_VIEWPORT,
   selectedNodeId: null,
   selectedEdgeId: null,
+  pendingConnection: null,
   isDirty: false,
   saveStatus: 'idle',
   saveError: null,
@@ -181,6 +213,7 @@ export const useArchitectureBuilderStore = create<ArchitectureBuilderState>((set
       viewport: architecture.viewport ?? DEFAULT_VIEWPORT,
       selectedNodeId: null,
       selectedEdgeId: null,
+      pendingConnection: null,
       isDirty: false,
       saveStatus: 'saved',
       saveError: null,
@@ -199,6 +232,7 @@ export const useArchitectureBuilderStore = create<ArchitectureBuilderState>((set
       viewport: DEFAULT_VIEWPORT,
       selectedNodeId: null,
       selectedEdgeId: null,
+      pendingConnection: null,
       isDirty: false,
       saveStatus: 'idle',
       saveError: null,
@@ -274,27 +308,52 @@ export const useArchitectureBuilderStore = create<ArchitectureBuilderState>((set
     if (!connection.source || !connection.target || connection.source === connection.target) {
       return;
     }
+    set({
+      pendingConnection: {
+        connection,
+        sourceNodeId: connection.source,
+        targetNodeId: connection.target,
+      },
+    });
+  },
+
+  cancelPendingConnection: () => set({ pendingConnection: null }),
+
+  confirmPendingConnection: (input) => {
     const state = get();
+    const pending = state.pendingConnection;
+    if (!pending) return null;
+
+    const normalized = normalizeEdgeData({
+      relationshipType: input.relationshipType,
+      direction: input.direction,
+      label: input.label,
+      metadata: input.metadata,
+    });
+
     const newEdge: ArchitectureFlowEdge = {
-      id: createEdgeId(connection.source, connection.target),
-      source: connection.source,
-      target: connection.target,
-      sourceHandle: connection.sourceHandle ?? undefined,
-      targetHandle: connection.targetHandle ?? undefined,
-      type: 'smoothstep',
-      data: { relationshipType: 'traffic-flow' },
+      id: createEdgeId(pending.sourceNodeId, pending.targetNodeId),
+      source: pending.sourceNodeId,
+      target: pending.targetNodeId,
+      sourceHandle: pending.connection.sourceHandle ?? undefined,
+      targetHandle: pending.connection.targetHandle ?? undefined,
+      type: 'relationship',
+      data: normalized,
     };
 
     set({
       past: pushHistory(state.past, state.nodes, state.edges),
       future: [],
       edges: addEdge(newEdge, state.edges),
+      pendingConnection: null,
       selectedEdgeId: newEdge.id,
       selectedNodeId: null,
       isDirty: true,
       saveStatus: 'unsaved',
       saveError: null,
     });
+
+    return newEdge;
   },
 
   addResourceNode: (resource, position) => {
@@ -349,6 +408,60 @@ export const useArchitectureBuilderStore = create<ArchitectureBuilderState>((set
 
     set({
       nodes: nextNodes,
+      isDirty: true,
+      saveStatus: 'unsaved',
+      saveError: null,
+    });
+  },
+
+  updateEdgeMetadata: (edgeId, patch) => {
+    const state = get();
+    const nextEdges = state.edges.map((edge) => {
+      if (edge.id !== edgeId) return edge;
+      const merged = normalizeEdgeData({
+        ...edge.data,
+        ...patch,
+        relationshipType:
+          patch.relationshipType ?? edge.data?.relationshipType ?? 'connects-to',
+        metadata: {
+          ...(edge.data?.metadata ?? {}),
+          ...(patch.metadata ?? {}),
+        },
+      });
+      return {
+        ...edge,
+        type: 'relationship',
+        data: merged,
+      };
+    });
+
+    set({
+      past: pushHistory(state.past, state.nodes, state.edges),
+      future: [],
+      edges: nextEdges,
+      isDirty: true,
+      saveStatus: 'unsaved',
+      saveError: null,
+    });
+  },
+
+  reverseEdgeDirection: (edgeId) => {
+    const state = get();
+    const nextEdges = state.edges.map((edge) => {
+      if (edge.id !== edgeId) return edge;
+      return {
+        ...edge,
+        source: edge.target,
+        target: edge.source,
+        sourceHandle: edge.targetHandle,
+        targetHandle: edge.sourceHandle,
+      };
+    });
+
+    set({
+      past: pushHistory(state.past, state.nodes, state.edges),
+      future: [],
+      edges: nextEdges,
       isDirty: true,
       saveStatus: 'unsaved',
       saveError: null,

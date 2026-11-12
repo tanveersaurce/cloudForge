@@ -577,4 +577,85 @@ describe('Architecture CRUD, Canvas Persistence, Validation & Ownership APIs', (
     expect(getARes.status).toBe(200);
     expect(getARes.body.data.name).toBe('User A Private Arch');
   });
+
+  it('persists Phase 05 relationship metadata, direction, and labels, and rejects invalid metadata ports', async () => {
+    const cookie = await registerAndGetCookie('Aarav Sharma', 'aarav@cloudforge.dev');
+
+    const createRes = await request(app)
+      .post('/api/architectures')
+      .set('Cookie', cookie)
+      .send({ name: 'Phase 05 Relationships Arch' });
+    const archId = createRes.body.data.id as string;
+
+    const node1 = makeSampleNode('node-alb-1', { label: 'Public ALB', resourceName: 'ALB' });
+    const node2 = makeSampleNode('node-ec2-1', { label: 'App EC2', resourceName: 'EC2' });
+
+    // Save Phase 05 relationship edge
+    const saveRes = await request(app)
+      .put(`/api/architectures/${archId}/canvas`)
+      .set('Cookie', cookie)
+      .send({
+        nodes: [node1, node2],
+        edges: [
+          {
+            id: 'edge-rel-1',
+            source: 'node-alb-1',
+            target: 'node-ec2-1',
+            type: 'relationship',
+            data: {
+              relationshipType: 'load-balances-to',
+              direction: 'source-to-target',
+              label: 'HTTPS Forward',
+              metadata: {
+                protocol: 'HTTPS',
+                port: 443,
+                description: 'Forwards TLS traffic to target group',
+              },
+            },
+          },
+        ],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      });
+
+    expect(saveRes.status).toBe(200);
+    expect(saveRes.body.data.edges[0]).toMatchObject({
+      id: 'edge-rel-1',
+      type: 'relationship',
+      data: {
+        relationshipType: 'load-balances-to',
+        direction: 'source-to-target',
+        label: 'HTTPS Forward',
+        metadata: {
+          protocol: 'HTTPS',
+          port: 443,
+          description: 'Forwards TLS traffic to target group',
+        },
+      },
+    });
+
+    // Reject invalid port > 65535
+    const invalidPortRes = await request(app)
+      .put(`/api/architectures/${archId}/canvas`)
+      .set('Cookie', cookie)
+      .send({
+        nodes: [node1, node2],
+        edges: [
+          {
+            id: 'edge-rel-bad',
+            source: 'node-alb-1',
+            target: 'node-ec2-1',
+            type: 'relationship',
+            data: {
+              relationshipType: 'sends-traffic-to',
+              direction: 'source-to-target',
+              metadata: { port: 70000 },
+            },
+          },
+        ],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      });
+
+    expect(invalidPortRes.status).toBe(400);
+    expect(invalidPortRes.body.success).toBe(false);
+  });
 });

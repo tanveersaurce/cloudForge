@@ -1,4 +1,4 @@
-import type { Edge, Node, Viewport } from '@xyflow/react';
+import type { Connection, Edge, Node, Viewport } from '@xyflow/react';
 
 export interface CanvasViewportDto {
   x: number;
@@ -20,9 +20,53 @@ export interface AwsResourceNodeData extends Record<string, unknown> {
   metadata: Record<string, unknown>;
 }
 
+export type RelationshipType =
+  | 'contains'
+  | 'attached-to'
+  | 'routes-to'
+  | 'connects-to'
+  | 'sends-traffic-to'
+  | 'receives-traffic-from'
+  | 'depends-on'
+  | 'accesses'
+  | 'replicates-to'
+  | 'load-balances-to'
+  | 'stores-data-in'
+  | 'triggers';
+
+export type RelationshipDirection =
+  | 'source-to-target'
+  | 'target-to-source'
+  | 'bidirectional';
+
+export type RelationshipCategory =
+  | 'structural'
+  | 'dependency'
+  | 'network'
+  | 'storage'
+  | 'replication'
+  | 'integration'
+  | 'security';
+
+export type DependencyKind =
+  | 'hard-dependency'
+  | 'optional'
+  | 'logical'
+  | 'network-traffic'
+  | 'security-permission';
+
+export interface RelationshipMetadata {
+  protocol?: string | null;
+  port?: number | null;
+  description?: string;
+  [key: string]: unknown;
+}
+
 export interface AwsResourceEdgeData extends Record<string, unknown> {
-  relationshipType: string;
+  relationshipType: RelationshipType | string;
+  direction?: RelationshipDirection;
   label?: string;
+  metadata?: RelationshipMetadata;
 }
 
 export type ArchitectureFlowNode = Node<AwsResourceNodeData, 'awsResource'>;
@@ -44,7 +88,7 @@ export interface ArchitectureEdgeDto {
   target: string;
   sourceHandle?: string | null;
   targetHandle?: string | null;
-  type: 'smoothstep';
+  type: 'smoothstep' | 'relationship';
   data?: AwsResourceEdgeData;
 }
 
@@ -83,6 +127,12 @@ export interface AwsResourceRegistryItem {
 }
 
 export type SaveStatus = 'idle' | 'unsaved' | 'saving' | 'saved' | 'error';
+
+export interface PendingConnection {
+  connection: Connection;
+  sourceNodeId: string;
+  targetNodeId: string;
+}
 
 export interface CreateArchitectureInput {
   name: string;
