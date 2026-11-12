@@ -11,7 +11,6 @@ export const SIDEBAR_NAV_ITEMS: NavItemConfig[] = [
     id: 'builder',
     label: 'Architecture Builder',
     path: '/builder',
-    phaseLabel: 'Phase 03',
     description: 'Visual drag-and-drop AWS topology canvas powered by React Flow (@xyflow/react).',
     plannedCapabilities: [
       'Drag-and-drop AWS service palette organized by category',
@@ -35,7 +34,6 @@ export const SIDEBAR_NAV_ITEMS: NavItemConfig[] = [
     id: 'architectures',
     label: 'My Architectures',
     path: '/architectures',
-    phaseLabel: 'Phase 02',
     description: 'Manage saved cloud architectures, revisions, and regional topologies.',
     plannedCapabilities: [
       'PostgreSQL-backed CRUD for workspace architecture projects',

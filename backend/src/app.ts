@@ -6,6 +6,7 @@ import { env } from './config/env.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { notFoundHandler } from './middleware/notFoundHandler.js';
 import { requestLogger } from './middleware/requestLogger.js';
+import { architectureRouter } from './modules/architectures/architecture.routes.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { awsRouter } from './modules/aws/aws.routes.js';
 import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
@@ -40,7 +41,7 @@ export function createApp() {
       success: true,
       data: {
         name: 'CloudForge API',
-        phase: 'Phase 03 — AWS Services Explorer',
+        phase: 'Phase 04 — AWS Architecture Builder',
         healthEndpoint: '/api/health',
       },
       timestamp: new Date().toISOString(),
@@ -51,6 +52,7 @@ export function createApp() {
   app.use('/api/auth', authRouter);
   app.use('/api/aws', awsRouter);
   app.use('/api/dashboard', dashboardRouter);
+  app.use('/api/architectures', architectureRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
