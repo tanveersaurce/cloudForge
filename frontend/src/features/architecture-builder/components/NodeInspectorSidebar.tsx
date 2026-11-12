@@ -1,6 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
+  ArrowLeftRight,
   ArrowRight,
+  CheckCircle2,
   Copy,
   GitBranch,
   Info,
@@ -18,7 +21,20 @@ import { cn } from '@/utils/cn';
 import type {
   ArchitectureFlowEdge,
   ArchitectureFlowNode,
+  AwsResourceEdgeData,
+  RelationshipDirection,
+  RelationshipType,
 } from '../types/architecture.types';
+import {
+  getCompatibleRelationships,
+  validateConnectionCompatibility,
+} from '../utils/awsCompatibilityRegistry';
+import { validateGraphStructure } from '../utils/graphEngine';
+import {
+  ALL_RELATIONSHIP_TYPES,
+  normalizeEdgeData,
+  RELATIONSHIP_DEFINITIONS,
+} from '../utils/relationshipModel';
 
 interface NodeInspectorSidebarProps {
   className?: string;
@@ -74,9 +90,16 @@ export function NodeInspectorSidebar({
   const selectedNodeId = useArchitectureBuilderStore((s) => s.selectedNodeId);
   const selectedEdgeId = useArchitectureBuilderStore((s) => s.selectedEdgeId);
   const updateNodeMetadata = useArchitectureBuilderStore((s) => s.updateNodeMetadata);
+  const updateEdgeMetadata = useArchitectureBuilderStore((s) => s.updateEdgeMetadata);
+  const reverseEdgeDirection = useArchitectureBuilderStore((s) => s.reverseEdgeDirection);
   const duplicateNode = useArchitectureBuilderStore((s) => s.duplicateNode);
   const deleteNode = useArchitectureBuilderStore((s) => s.deleteNode);
   const deleteEdge = useArchitectureBuilderStore((s) => s.deleteEdge);
+
+  const graphValidation = useMemo(
+    () => validateGraphStructure(nodes, edges),
+    [nodes, edges],
+  );
 
   const selectedNode: ArchitectureFlowNode | undefined = selectedNodeId
     ? nodes.find((n) => n.id === selectedNodeId)
@@ -161,6 +184,8 @@ export function NodeInspectorSidebar({
           <SelectedEdgePanel
             edge={selectedEdge}
             nodes={nodes}
+            onUpdateEdge={updateEdgeMetadata}
+            onReverseEdge={reverseEdgeDirection}
             onDelete={deleteEdge}
           />
         ) : (
@@ -170,6 +195,9 @@ export function NodeInspectorSidebar({
             status={architecture?.status ?? 'draft'}
             nodeCount={nodes.length}
             edgeCount={edges.length}
+            componentCount={graphValidation.componentCount}
+            errors={graphValidation.errors.map((e) => e.message)}
+            warnings={graphValidation.warnings.map((w) => w.message)}
           />
         )}
       </div>
@@ -183,6 +211,9 @@ interface EmptySelectionPanelProps {
   status: string;
   nodeCount: number;
   edgeCount: number;
+  componentCount: number;
+  errors: string[];
+  warnings: string[];
 }
 
 function EmptySelectionPanel({
@@ -191,6 +222,9 @@ function EmptySelectionPanel({
   status,
   nodeCount,
   edgeCount,
+  componentCount,
+  errors,
+  warnings,
 }: EmptySelectionPanelProps) {
   const normalizedStatus = status.toLowerCase();
   const statusStyle =
@@ -246,6 +280,44 @@ function EmptySelectionPanel({
             </p>
           </div>
         </div>
+      </section>
+
+      {/* Graph Diagnostics */}
+      <section className="rounded-xl border border-border-subtle bg-surface-elevated/60 p-3.5">
+        <div className="flex items-center justify-between text-xs font-semibold text-slate-200">
+          <span>Graph Diagnostics</span>
+          <span className="font-mono text-[11px] text-slate-400">
+            {componentCount} {componentCount === 1 ? 'component' : 'components'}
+          </span>
+        </div>
+
+        {errors.length === 0 && warnings.length === 0 ? (
+          <div className="mt-2.5 flex items-center gap-2 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-2 text-[11px] text-emerald-300">
+            <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+            <span>No structural or dependency issues detected.</span>
+          </div>
+        ) : (
+          <div className="mt-2.5 space-y-1.5">
+            {errors.map((msg, idx) => (
+              <div
+                key={`err-${idx}`}
+                className="flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-2 text-[11px] text-rose-200"
+              >
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-400" />
+                <span>{msg}</span>
+              </div>
+            ))}
+            {warnings.map((msg, idx) => (
+              <div
+                key={`warn-${idx}`}
+                className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-200"
+              >
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" />
+                <span>{msg}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       {/* Canvas Usage Guide */}
@@ -416,49 +488,291 @@ function SelectedNodePanel({
 interface SelectedEdgePanelProps {
   edge: ArchitectureFlowEdge;
   nodes: ArchitectureFlowNode[];
+  onUpdateEdge: (edgeId: string, patch: Partial<AwsResourceEdgeData>) => void;
+  onReverseEdge: (edgeId: string) => void;
   onDelete: (edgeId: string) => void;
 }
 
-function SelectedEdgePanel({ edge, nodes, onDelete }: SelectedEdgePanelProps) {
+function SelectedEdgePanel({
+  edge,
+  nodes,
+  onUpdateEdge,
+  onReverseEdge,
+  onDelete,
+}: SelectedEdgePanelProps) {
   const sourceNode = nodes.find((n) => n.id === edge.source);
   const targetNode = nodes.find((n) => n.id === edge.target);
 
   const sourceLabel = sourceNode?.data.label || sourceNode?.data.resourceName || edge.source;
   const targetLabel = targetNode?.data.label || targetNode?.data.resourceName || edge.target;
-  const relationshipType = edge.data?.relationshipType ?? 'traffic-flow';
+
+  const normalized = useMemo(() => normalizeEdgeData(edge.data), [edge.data]);
+
+  const [relationshipType, setRelationshipType] = useState<RelationshipType>(
+    normalized.relationshipType as RelationshipType,
+  );
+  const [direction, setDirection] = useState<RelationshipDirection>(normalized.direction);
+  const [label, setLabel] = useState(normalized.label);
+  const [description, setDescription] = useState(normalized.metadata.description ?? '');
+  const [protocol, setProtocol] = useState(normalized.metadata.protocol ?? '');
+  const [port, setPort] = useState(
+    normalized.metadata.port !== null && normalized.metadata.port !== undefined
+      ? String(normalized.metadata.port)
+      : '',
+  );
+
+  useEffect(() => {
+    setRelationshipType(normalized.relationshipType as RelationshipType);
+    setDirection(normalized.direction);
+    setLabel(normalized.label);
+    setDescription(normalized.metadata.description ?? '');
+    setProtocol(normalized.metadata.protocol ?? '');
+    setPort(
+      normalized.metadata.port !== null && normalized.metadata.port !== undefined
+        ? String(normalized.metadata.port)
+        : '',
+    );
+  }, [edge.id, normalized]);
+
+  const compatibleOptions = useMemo(() => {
+    if (!sourceNode || !targetNode) return [];
+    return getCompatibleRelationships(sourceNode, targetNode);
+  }, [sourceNode, targetNode]);
+
+  const compatibility = useMemo(() => {
+    if (!sourceNode || !targetNode) return null;
+    return validateConnectionCompatibility(sourceNode, targetNode, relationshipType);
+  }, [sourceNode, targetNode, relationshipType]);
+
+  const selectedDef = RELATIONSHIP_DEFINITIONS[relationshipType];
+  const compatibleSet = new Set(compatibleOptions.map((o) => o.relationshipType));
+
+  const handleCancel = () => {
+    setRelationshipType(normalized.relationshipType as RelationshipType);
+    setDirection(normalized.direction);
+    setLabel(normalized.label);
+    setDescription(normalized.metadata.description ?? '');
+    setProtocol(normalized.metadata.protocol ?? '');
+    setPort(
+      normalized.metadata.port !== null && normalized.metadata.port !== undefined
+        ? String(normalized.metadata.port)
+        : '',
+    );
+  };
+
+  const handleSave = () => {
+    if (compatibility && !compatibility.valid) return;
+    const parsedPort = port.trim() ? Number(port.trim()) : null;
+    onUpdateEdge(edge.id, {
+      relationshipType,
+      direction,
+      label: label.trim() || selectedDef.label,
+      metadata: {
+        protocol: protocol.trim() || null,
+        port: parsedPort !== null && Number.isInteger(parsedPort) ? parsedPort : null,
+        description: description.trim(),
+      },
+    });
+  };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <section className="rounded-xl border border-border-subtle bg-surface-elevated/80 p-3.5">
-        <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
-          <GitBranch className="h-4 w-4 text-sky-400" />
-          <span>Resource Connection</span>
+        <div className="flex items-center justify-between gap-2 text-xs font-semibold text-slate-200">
+          <div className="flex items-center gap-2">
+            <GitBranch className="h-4 w-4 text-sky-400" />
+            <span>Connection Properties</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => onReverseEdge(edge.id)}
+            title="Reverse source and target"
+            aria-label="Reverse Endpoints"
+            className="inline-flex items-center gap-1 rounded border border-border-subtle bg-canvas px-2 py-1 text-[11px] font-medium text-slate-300 hover:border-sky-400/50 hover:text-sky-300"
+          >
+            <ArrowLeftRight className="h-3 w-3" />
+            <span>Swap</span>
+          </button>
         </div>
 
         <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-border-subtle bg-canvas/70 px-3 py-2.5">
-          <span className="min-w-0 truncate text-xs font-medium text-slate-100" title={sourceLabel}>
-            {sourceLabel}
-          </span>
+          <div className="min-w-0">
+            <p className="truncate text-xs font-medium text-slate-100" title={sourceLabel}>
+              {sourceLabel}
+            </p>
+            <p className="font-mono text-[10px] text-slate-400">
+              {sourceNode?.data.resourceType ?? 'resource'}
+            </p>
+          </div>
           <ArrowRight className="h-3.5 w-3.5 shrink-0 text-sky-400" />
-          <span className="min-w-0 truncate text-xs font-medium text-slate-100" title={targetLabel}>
-            {targetLabel}
-          </span>
+          <div className="min-w-0 text-right">
+            <p className="truncate text-xs font-medium text-slate-100" title={targetLabel}>
+              {targetLabel}
+            </p>
+            <p className="font-mono text-[10px] text-slate-400">
+              {targetNode?.data.resourceType ?? 'resource'}
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <div>
+          <label
+            htmlFor="inspector-edge-type"
+            className="block text-xs font-medium text-slate-300"
+          >
+            Relationship Type
+          </label>
+          <select
+            id="inspector-edge-type"
+            value={relationshipType}
+            onChange={(e) => {
+              const nextType = e.target.value as RelationshipType;
+              const nextDef = RELATIONSHIP_DEFINITIONS[nextType];
+              setRelationshipType(nextType);
+              setDirection(nextDef.defaultDirection);
+              setLabel(nextDef.label);
+            }}
+            className="mt-1.5 w-full rounded-lg border border-border-subtle bg-canvas/80 px-3 py-2 text-xs text-slate-100 focus:border-sky-500/60 focus:outline-none"
+          >
+            {ALL_RELATIONSHIP_TYPES.map((type) => {
+              const def = RELATIONSHIP_DEFINITIONS[type];
+              const isCompat = compatibleSet.has(type);
+              return (
+                <option key={type} value={type}>
+                  {def.label}
+                  {!isCompat ? ' (Incompatible)' : ''}
+                </option>
+              );
+            })}
+          </select>
         </div>
 
-        <div className="mt-3 space-y-2 border-t border-border-subtle/80 pt-3 text-[11px]">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-slate-400">Relationship</span>
-            <span className="rounded border border-sky-500/25 bg-sky-500/10 px-2 py-0.5 font-mono text-sky-300">
-              {relationshipType}
-            </span>
+        {compatibility && !compatibility.valid ? (
+          <div
+            role="alert"
+            className="flex items-start gap-2 rounded-lg border border-rose-500/35 bg-rose-500/10 p-2.5 text-[11px] text-rose-200"
+          >
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-400" />
+            <span>{compatibility.reason}</span>
           </div>
+        ) : compatibility ? (
+          <div className="rounded-lg border border-border-subtle bg-surface-elevated/50 p-2.5 text-[11px] text-slate-300">
+            <p>{compatibility.reason}</p>
+          </div>
+        ) : null}
 
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-slate-400">Edge ID</span>
-            <span className="truncate font-mono text-slate-300" title={edge.id}>
-              {edge.id}
-            </span>
+        <div>
+          <label
+            htmlFor="inspector-edge-direction"
+            className="block text-xs font-medium text-slate-300"
+          >
+            Direction
+          </label>
+          <select
+            id="inspector-edge-direction"
+            value={direction}
+            onChange={(e) => setDirection(e.target.value as RelationshipDirection)}
+            className="mt-1.5 w-full rounded-lg border border-border-subtle bg-canvas/80 px-3 py-2 text-xs text-slate-100 focus:border-sky-500/60 focus:outline-none"
+          >
+            <option value="source-to-target">Source → Target</option>
+            <option value="target-to-source">Target → Source</option>
+            {selectedDef.allowsBidirectional ? (
+              <option value="bidirectional">Bidirectional ↔</option>
+            ) : null}
+          </select>
+        </div>
+
+        <div>
+          <label
+            htmlFor="inspector-edge-label"
+            className="block text-xs font-medium text-slate-300"
+          >
+            Connection Label
+          </label>
+          <input
+            id="inspector-edge-label"
+            type="text"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            maxLength={120}
+            className="mt-1.5 w-full rounded-lg border border-border-subtle bg-canvas/80 px-3 py-2 text-xs text-slate-100 focus:border-sky-500/60 focus:outline-none"
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label
+              htmlFor="inspector-edge-protocol"
+              className="block text-xs font-medium text-slate-300"
+            >
+              Protocol
+            </label>
+            <input
+              id="inspector-edge-protocol"
+              type="text"
+              value={protocol}
+              onChange={(e) => setProtocol(e.target.value)}
+              placeholder="HTTPS, TCP..."
+              maxLength={32}
+              className="mt-1.5 w-full rounded-lg border border-border-subtle bg-canvas/80 px-2.5 py-1.5 text-xs text-slate-100 focus:border-sky-500/60 focus:outline-none"
+            />
           </div>
+          <div>
+            <label
+              htmlFor="inspector-edge-port"
+              className="block text-xs font-medium text-slate-300"
+            >
+              Port
+            </label>
+            <input
+              id="inspector-edge-port"
+              type="number"
+              min={1}
+              max={65535}
+              value={port}
+              onChange={(e) => setPort(e.target.value)}
+              placeholder="443"
+              className="mt-1.5 w-full rounded-lg border border-border-subtle bg-canvas/80 px-2.5 py-1.5 text-xs text-slate-100 focus:border-sky-500/60 focus:outline-none"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label
+            htmlFor="inspector-edge-description"
+            className="block text-xs font-medium text-slate-300"
+          >
+            Description
+          </label>
+          <textarea
+            id="inspector-edge-description"
+            rows={2}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            maxLength={500}
+            placeholder="Describe this relationship..."
+            className="mt-1.5 w-full resize-none rounded-lg border border-border-subtle bg-canvas/80 px-3 py-2 text-xs text-slate-100 focus:border-sky-500/60 focus:outline-none"
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 pt-1">
+          <button
+            type="button"
+            onClick={handleCancel}
+            className="inline-flex items-center justify-center rounded-lg border border-border-strong bg-surface-elevated px-3 py-2 text-xs font-medium text-slate-200 transition-colors hover:bg-surface-hover"
+          >
+            Cancel Changes
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={Boolean(compatibility && !compatibility.valid)}
+            className="inline-flex items-center justify-center rounded-lg bg-sky-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Save Changes
+          </button>
         </div>
       </section>
 
@@ -469,7 +783,7 @@ function SelectedEdgePanel({ edge, nodes, onDelete }: SelectedEdgePanelProps) {
           className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-300 transition-colors hover:bg-rose-500/20 hover:text-rose-200"
         >
           <Trash2 className="h-3.5 w-3.5" />
-          <span>Delete Connection</span>
+          <span>Delete Relationship</span>
         </button>
       </section>
     </div>

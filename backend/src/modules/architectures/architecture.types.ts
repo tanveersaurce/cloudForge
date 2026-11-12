@@ -28,9 +28,37 @@ export interface ArchitectureNodeDto {
   data: ArchitectureNodeDataDto;
 }
 
+export type RelationshipType =
+  | 'contains'
+  | 'attached-to'
+  | 'routes-to'
+  | 'connects-to'
+  | 'sends-traffic-to'
+  | 'receives-traffic-from'
+  | 'depends-on'
+  | 'accesses'
+  | 'replicates-to'
+  | 'load-balances-to'
+  | 'stores-data-in'
+  | 'triggers';
+
+export type RelationshipDirection =
+  | 'source-to-target'
+  | 'target-to-source'
+  | 'bidirectional';
+
+export interface RelationshipMetadataDto {
+  protocol?: string | null;
+  port?: number | null;
+  description?: string;
+  [key: string]: unknown;
+}
+
 export interface ArchitectureEdgeDataDto {
   relationshipType: string;
+  direction?: RelationshipDirection;
   label?: string;
+  metadata?: RelationshipMetadataDto;
 }
 
 export interface ArchitectureEdgeDto {
@@ -39,7 +67,7 @@ export interface ArchitectureEdgeDto {
   target: string;
   sourceHandle?: string | null;
   targetHandle?: string | null;
-  type: 'smoothstep';
+  type: 'smoothstep' | 'relationship';
   data?: ArchitectureEdgeDataDto;
 }
 

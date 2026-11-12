@@ -15,10 +15,26 @@ import { useAuthStore } from '@/store/useAuthStore';
 import { useUiStore } from '@/store/useUiStore';
 import type {
   ArchitectureDetailDto,
+  ArchitectureFlowEdge,
+  ArchitectureFlowNode,
   ArchitectureSummaryDto,
   CreateArchitectureInput,
   SaveArchitectureCanvasInput,
 } from './types/architecture.types';
+import {
+  getCompatibleRelationships,
+  validateConnectionCompatibility,
+} from './utils/awsCompatibilityRegistry';
+import {
+  detectCycles,
+  getConnectedComponents,
+  getDependencies,
+  getDependents,
+  getIncomingEdges,
+  getOutgoingEdges,
+  validateGraphStructure,
+} from './utils/graphEngine';
+import { normalizeEdgeData } from './utils/relationshipModel';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   globalThis.ResizeObserver = class ResizeObserver {
@@ -434,5 +450,237 @@ describe('Phase 04 Architecture Builder UI', () => {
         viewport: expect.objectContaining({ zoom: 1 }),
       }),
     );
+  });
+
+  it('opens ConnectionTypeModal on connect, rejects incompatible relationships, edits & saves in Connection Inspector, and normalizes legacy edges', async () => {
+    const user = userEvent.setup();
+    const legacyDetail: ArchitectureDetailDto = {
+      ...structuredClone(initialDetail),
+      nodes: [
+        initialDetail.nodes[0],
+        {
+          id: 'node-subnet-1',
+          type: 'awsResource',
+          position: { x: 360, y: 120 },
+          data: {
+            serviceId: 'svc-vpc',
+            serviceSlug: 'amazon-vpc',
+            serviceName: 'Amazon VPC',
+            categorySlug: 'networking-content-delivery',
+            categoryName: 'Networking & Content Delivery',
+            iconKey: 'vpc',
+            resourceName: 'Subnet',
+            resourceType: 'aws_subnet',
+            label: 'App Subnet',
+            description: 'Application subnet',
+            metadata: {},
+          },
+        },
+      ],
+      edges: [
+        {
+          id: 'legacy-edge-1',
+          source: 'node-vpc-1',
+          target: 'node-subnet-1',
+          type: 'smoothstep',
+          data: { relationshipType: 'traffic-flow' },
+        },
+      ],
+    };
+
+    getArchitectureByIdMock.mockResolvedValueOnce(legacyDetail);
+    renderAppAt('/architecture-builder/arch-1');
+
+    expect(await screen.findByText('Primary VPC')).toBeInTheDocument();
+    expect(await screen.findByText('App Subnet')).toBeInTheDocument();
+
+    // Verify legacy 'traffic-flow' edge normalized to 'sends-traffic-to'
+    const loadedEdge = useArchitectureBuilderStore.getState().edges[0];
+    expect(loadedEdge.data?.relationshipType).toBe('sends-traffic-to');
+    expect(loadedEdge.data?.direction).toBe('source-to-target');
+
+    // Trigger onConnect(Subnet -> VPC) to verify incompatible 'contains' warning and valid 'depends-on'
+    useArchitectureBuilderStore.getState().onConnect({
+      source: 'node-subnet-1',
+      target: 'node-vpc-1',
+      sourceHandle: null,
+      targetHandle: null,
+    });
+
+    expect(await screen.findByText('Define Resource Relationship')).toBeInTheDocument();
+    const relTypeSelect = screen.getByLabelText(/relationship type/i);
+    await user.selectOptions(relTypeSelect, 'contains');
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /Subnet cannot contain a VPC/i,
+    );
+    const createBtn = screen.getByRole('button', { name: /create relationship/i });
+    expect(createBtn).toBeDisabled();
+
+    // Switch to valid 'depends-on', fill protocol/label, and create
+    await user.selectOptions(relTypeSelect, 'depends-on');
+    expect(createBtn).toBeEnabled();
+    await user.click(createBtn);
+
+    await waitFor(() => {
+      expect(useArchitectureBuilderStore.getState().edges).toHaveLength(2);
+    });
+
+    // Connection Inspector should open for the newly created edge
+    expect(await screen.findByText('Connection Properties')).toBeInTheDocument();
+    const edgeLabelInput = screen.getByLabelText(/connection label/i);
+    const protocolInput = screen.getByLabelText(/protocol/i);
+    const portInput = screen.getByLabelText(/port/i);
+
+    await user.clear(edgeLabelInput);
+    await user.type(edgeLabelInput, 'Parent VPC Dependency');
+    await user.type(protocolInput, 'TCP');
+    await user.type(portInput, '443');
+
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+    const updatedEdge = useArchitectureBuilderStore
+      .getState()
+      .edges.find((e) => e.id !== 'legacy-edge-1');
+    expect(updatedEdge?.data).toMatchObject({
+      relationshipType: 'depends-on',
+      label: 'Parent VPC Dependency',
+      metadata: {
+        protocol: 'TCP',
+        port: 443,
+      },
+    });
+
+    // Delete the new relationship via Connection Inspector
+    await user.click(screen.getByRole('button', { name: /delete relationship/i }));
+    await waitFor(() => {
+      expect(useArchitectureBuilderStore.getState().edges).toHaveLength(1);
+    });
+
+    // Save canvas persists normalized Phase 05 edge payload
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => {
+      expect(saveArchitectureCanvasMock).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+function makeFlowNode(
+  id: string,
+  resourceType: string,
+  resourceName: string,
+): ArchitectureFlowNode {
+  return {
+    id,
+    type: 'awsResource',
+    position: { x: 0, y: 0 },
+    data: {
+      serviceId: `svc-${resourceType}`,
+      serviceSlug: resourceType,
+      serviceName: resourceName,
+      categorySlug: 'compute',
+      categoryName: 'Compute',
+      iconKey: 'ec2',
+      resourceName,
+      resourceType,
+      label: resourceName,
+      description: '',
+      metadata: {},
+    },
+  };
+}
+
+describe('Phase 05 AWS Compatibility & Graph Engine', () => {
+  it('validates AWS resource compatibility rules and detects missing hard dependencies', () => {
+    const vpc = makeFlowNode('vpc-1', 'aws_vpc', 'VPC');
+    const subnet = makeFlowNode('sub-1', 'aws_subnet', 'Subnet');
+    const alb = makeFlowNode('alb-1', 'aws_lb', 'ALB');
+    const ec2 = makeFlowNode('ec2-1', 'aws_instance', 'EC2');
+    const iam = makeFlowNode('iam-1', 'aws_iam_role', 'IAM Role');
+
+    expect(validateConnectionCompatibility(vpc, subnet, 'contains').valid).toBe(true);
+    expect(validateConnectionCompatibility(subnet, vpc, 'contains').valid).toBe(false);
+    expect(validateConnectionCompatibility(alb, ec2, 'load-balances-to').valid).toBe(true);
+    expect(validateConnectionCompatibility(ec2, iam, 'sends-traffic-to').valid).toBe(false);
+
+    const compat = getCompatibleRelationships(vpc, subnet);
+    expect(compat.some((c) => c.relationshipType === 'contains' && c.recommended)).toBe(true);
+
+    // Orphaned subnet without VPC triggers missing hard dependency warning
+    const orphanValidation = validateGraphStructure([subnet], []);
+    expect(orphanValidation.missingDependencies).toHaveLength(1);
+    expect(orphanValidation.missingDependencies[0].requiredTargetTypes).toContain('aws_vpc');
+
+    // Connected VPC -> Subnet satisfies hard dependency
+    const connectedEdge: ArchitectureFlowEdge = {
+      id: 'e-vpc-sub',
+      source: 'vpc-1',
+      target: 'sub-1',
+      type: 'relationship',
+      data: normalizeEdgeData({ relationshipType: 'contains' }),
+    };
+    const validResult = validateGraphStructure([vpc, subnet], [connectedEdge]);
+    expect(validResult.isValid).toBe(true);
+    expect(validResult.missingDependencies).toHaveLength(0);
+  });
+
+  it('computes graph traversal, connected components, and relationship-aware cycle detection', () => {
+    const vpc = makeFlowNode('vpc-1', 'aws_vpc', 'VPC');
+    const sub = makeFlowNode('sub-1', 'aws_subnet', 'Subnet');
+    const ec2A = makeFlowNode('ec2-a', 'aws_instance', 'App A');
+    const ec2B = makeFlowNode('ec2-b', 'aws_instance', 'App B');
+
+    const edges: ArchitectureFlowEdge[] = [
+      {
+        id: 'e1',
+        source: 'vpc-1',
+        target: 'sub-1',
+        type: 'relationship',
+        data: normalizeEdgeData({ relationshipType: 'contains' }),
+      },
+      {
+        id: 'e2',
+        source: 'ec2-a',
+        target: 'ec2-b',
+        type: 'relationship',
+        data: normalizeEdgeData({ relationshipType: 'sends-traffic-to' }),
+      },
+      {
+        id: 'e3',
+        source: 'ec2-b',
+        target: 'ec2-a',
+        type: 'relationship',
+        data: normalizeEdgeData({ relationshipType: 'sends-traffic-to' }),
+      },
+    ];
+
+    expect(getIncomingEdges(edges, 'sub-1')).toHaveLength(1);
+    expect(getOutgoingEdges(edges, 'vpc-1')).toHaveLength(1);
+    expect(getDependencies([vpc, sub], edges, 'sub-1').map((n) => n.id)).toEqual(['vpc-1']);
+    expect(getDependents([vpc, sub], edges, 'vpc-1').map((n) => n.id)).toEqual(['sub-1']);
+    expect(getConnectedComponents([vpc, sub, ec2A, ec2B], edges)).toHaveLength(2);
+
+    // Bidirectional / cyclic network traffic is legitimate and NOT flagged as a cycle
+    expect(detectCycles([vpc, sub, ec2A, ec2B], edges)).toHaveLength(0);
+
+    // Structural `depends-on` cycle IS flagged
+    const cyclicEdges: ArchitectureFlowEdge[] = [
+      {
+        id: 'c1',
+        source: 'ec2-a',
+        target: 'ec2-b',
+        type: 'relationship',
+        data: normalizeEdgeData({ relationshipType: 'depends-on' }),
+      },
+      {
+        id: 'c2',
+        source: 'ec2-b',
+        target: 'ec2-a',
+        type: 'relationship',
+        data: normalizeEdgeData({ relationshipType: 'depends-on' }),
+      },
+    ];
+    const detected = detectCycles([ec2A, ec2B], cyclicEdges);
+    expect(detected).toHaveLength(1);
   });
 });

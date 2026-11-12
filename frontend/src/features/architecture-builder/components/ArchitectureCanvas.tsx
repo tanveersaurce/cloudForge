@@ -1,4 +1,4 @@
-import { useCallback, useEffect, type DragEvent } from 'react';
+import { useCallback, useEffect, useState, type DragEvent, type MouseEvent } from 'react';
 import {
   Background,
   BackgroundVariant,
@@ -14,7 +14,10 @@ import {
   type Viewport,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { ArrowLeftRight, Pencil, Trash2 } from 'lucide-react';
 import { AwsResourceNode } from './AwsResourceNode';
+import { ConnectionTypeModal } from './ConnectionTypeModal';
+import { RelationshipEdge } from './RelationshipEdge';
 import type {
   ArchitectureFlowEdge,
   ArchitectureFlowNode,
@@ -29,8 +32,12 @@ const nodeTypes = {
   awsResource: AwsResourceNode,
 };
 
+const edgeTypes = {
+  relationship: RelationshipEdge,
+};
+
 const defaultEdgeOptions = {
-  type: 'smoothstep' as const,
+  type: 'relationship' as const,
   animated: false,
 };
 
@@ -69,9 +76,16 @@ function ArchitectureCanvasInner({ onReactFlowInit }: ArchitectureCanvasProps) {
   const addResourceNode = useArchitectureBuilderStore((s) => s.addResourceNode);
   const deleteNode = useArchitectureBuilderStore((s) => s.deleteNode);
   const deleteEdge = useArchitectureBuilderStore((s) => s.deleteEdge);
+  const reverseEdgeDirection = useArchitectureBuilderStore((s) => s.reverseEdgeDirection);
   const undo = useArchitectureBuilderStore((s) => s.undo);
   const redo = useArchitectureBuilderStore((s) => s.redo);
   const saveCanvas = useArchitectureBuilderStore((s) => s.saveCanvas);
+
+  const [edgeContextMenu, setEdgeContextMenu] = useState<{
+    edgeId: string;
+    x: number;
+    y: number;
+  } | null>(null);
 
   const handleMoveEnd: OnMoveEnd = useCallback(
     (_event, viewport) => {
@@ -82,6 +96,7 @@ function ArchitectureCanvasInner({ onReactFlowInit }: ArchitectureCanvasProps) {
 
   const handleNodeClick: NodeMouseHandler<ArchitectureFlowNode> = useCallback(
     (_event, node) => {
+      setEdgeContextMenu(null);
       selectNode(node.id);
     },
     [selectNode],
@@ -89,12 +104,27 @@ function ArchitectureCanvasInner({ onReactFlowInit }: ArchitectureCanvasProps) {
 
   const handleEdgeClick: EdgeMouseHandler<ArchitectureFlowEdge> = useCallback(
     (_event, edge) => {
+      setEdgeContextMenu(null);
       selectEdge(edge.id);
     },
     [selectEdge],
   );
 
+  const handleEdgeContextMenu = useCallback(
+    (event: MouseEvent, edge: ArchitectureFlowEdge) => {
+      event.preventDefault();
+      selectEdge(edge.id);
+      setEdgeContextMenu({
+        edgeId: edge.id,
+        x: event.clientX,
+        y: event.clientY,
+      });
+    },
+    [selectEdge],
+  );
+
   const handlePaneClick = useCallback(() => {
+    setEdgeContextMenu(null);
     selectNode(null);
   }, [selectNode]);
 
@@ -176,6 +206,7 @@ function ArchitectureCanvasInner({ onReactFlowInit }: ArchitectureCanvasProps) {
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         defaultEdgeOptions={defaultEdgeOptions}
         defaultViewport={architecture?.viewport ?? DEFAULT_VIEWPORT}
         onNodesChange={onNodesChange}
@@ -184,6 +215,7 @@ function ArchitectureCanvasInner({ onReactFlowInit }: ArchitectureCanvasProps) {
         onMoveEnd={handleMoveEnd}
         onNodeClick={handleNodeClick}
         onEdgeClick={handleEdgeClick}
+        onEdgeContextMenu={handleEdgeContextMenu}
         onPaneClick={handlePaneClick}
         onInit={onReactFlowInit}
         deleteKeyCode={null}
@@ -211,6 +243,55 @@ function ArchitectureCanvasInner({ onReactFlowInit }: ArchitectureCanvasProps) {
           className="!rounded-lg !border !border-slate-800 !bg-slate-900/95 !shadow-xl [&>button]:!border-slate-800 [&>button]:!bg-slate-900 [&>button]:!text-slate-300 [&>button:hover]:!bg-slate-800 [&>button:hover]:!text-slate-100"
         />
       </ReactFlow>
+
+      {edgeContextMenu ? (
+        <div
+          role="menu"
+          aria-label="Connection context menu"
+          style={{ top: edgeContextMenu.y, left: edgeContextMenu.x }}
+          className="fixed z-50 min-w-[170px] rounded-lg border border-border-strong bg-surface-elevated p-1 shadow-xl"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              selectEdge(edgeContextMenu.edgeId);
+              setEdgeContextMenu(null);
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-hover"
+          >
+            <Pencil className="h-3.5 w-3.5 text-sky-400" />
+            <span>Edit Connection</span>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              reverseEdgeDirection(edgeContextMenu.edgeId);
+              setEdgeContextMenu(null);
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs text-slate-200 hover:bg-surface-hover"
+          >
+            <ArrowLeftRight className="h-3.5 w-3.5 text-indigo-400" />
+            <span>Reverse Endpoints</span>
+          </button>
+          <div className="my-1 border-t border-border-subtle" />
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              deleteEdge(edgeContextMenu.edgeId);
+              setEdgeContextMenu(null);
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs text-rose-300 hover:bg-rose-500/15"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            <span>Delete Connection</span>
+          </button>
+        </div>
+      ) : null}
+
+      <ConnectionTypeModal />
     </div>
   );
 }

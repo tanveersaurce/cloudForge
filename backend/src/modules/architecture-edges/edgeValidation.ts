@@ -4,19 +4,56 @@ import type {
   ArchitectureNodeDto,
 } from '../architectures/architecture.types.js';
 
+export const RELATIONSHIP_TYPES = [
+  'contains',
+  'attached-to',
+  'routes-to',
+  'connects-to',
+  'sends-traffic-to',
+  'receives-traffic-from',
+  'depends-on',
+  'accesses',
+  'replicates-to',
+  'load-balances-to',
+  'stores-data-in',
+  'triggers',
+] as const;
+
+export const RELATIONSHIP_DIRECTIONS = [
+  'source-to-target',
+  'target-to-source',
+  'bidirectional',
+] as const;
+
+export const relationshipMetadataSchema = z
+  .object({
+    protocol: z.string().trim().max(32).nullable().optional(),
+    port: z
+      .number()
+      .int('Port must be an integer')
+      .min(1, 'Port must be between 1 and 65535')
+      .max(65535, 'Port must be between 1 and 65535')
+      .nullable()
+      .optional(),
+    description: z.string().trim().max(500).optional(),
+  })
+  .passthrough();
+
 export const architectureEdgeDataSchema = z.object({
   relationshipType: z.string().trim().min(1, 'relationshipType is required'),
-  label: z.string().optional(),
+  direction: z.enum(RELATIONSHIP_DIRECTIONS).optional(),
+  label: z.string().trim().max(120).optional(),
+  metadata: relationshipMetadataSchema.optional(),
 });
 
-export const architectureEdgeSchema: z.ZodType<ArchitectureEdgeDto> = z
+export const architectureEdgeSchema: z.ZodType<ArchitectureEdgeDto, z.ZodTypeDef, unknown> = z
   .object({
     id: z.string().trim().min(1, 'Edge id is required'),
     source: z.string().trim().min(1, 'Edge source is required'),
     target: z.string().trim().min(1, 'Edge target is required'),
     sourceHandle: z.string().nullable().optional(),
     targetHandle: z.string().nullable().optional(),
-    type: z.literal('smoothstep'),
+    type: z.enum(['smoothstep', 'relationship']).default('smoothstep'),
     data: architectureEdgeDataSchema.optional(),
   })
   .refine((edge) => edge.source !== edge.target, {
