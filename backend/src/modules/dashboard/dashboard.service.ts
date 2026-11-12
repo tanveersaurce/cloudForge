@@ -12,6 +12,17 @@ export interface DashboardArchitectureSummary {
   updatedAt: string;
 }
 
+export interface DashboardServicePreview {
+  id: string;
+  slug: string;
+  name: string;
+  shortName: string;
+  iconKey: string;
+  categoryName: string;
+  terraformSupport: string;
+  lastExploredAt?: string;
+}
+
 export interface DashboardQuickStartTemplate {
   id: string;
   title: string;
@@ -28,7 +39,7 @@ export interface DashboardActivityEntry {
   title: string;
   detail: string;
   timestamp: string;
-  type: 'account' | 'architecture';
+  type: 'account' | 'architecture' | 'service';
 }
 
 export interface DashboardOverviewData {
@@ -37,8 +48,9 @@ export interface DashboardOverviewData {
     totalArchitectures: number;
     savedProjects: number;
     awsServicesExplored: {
-      available: false;
-      value: null;
+      available: true;
+      value: number;
+      totalCatalogServices: number;
       statusLabel: string;
     };
     estimatedMonthlyCost: {
@@ -48,6 +60,8 @@ export interface DashboardOverviewData {
     };
   };
   recentArchitectures: DashboardArchitectureSummary[];
+  favoriteServices: DashboardServicePreview[];
+  recentlyExploredServices: DashboardServicePreview[];
   quickStartTemplates: DashboardQuickStartTemplate[];
   recentActivity: DashboardActivityEntry[];
 }
@@ -96,7 +110,15 @@ const STATIC_QUICK_START_TEMPLATES: DashboardQuickStartTemplate[] = [
 ];
 
 export async function getDashboardOverview(user: AuthenticatedUser): Promise<DashboardOverviewData> {
-  const [totalArchitectures, savedProjects, architectures] = await Promise.all([
+  const [
+    totalArchitectures,
+    savedProjects,
+    architectures,
+    exploredCount,
+    totalCatalogServices,
+    favoriteRows,
+    historyRows,
+  ] = await Promise.all([
     prisma.architecture.count({ where: { userId: user.id } }),
     prisma.architecture.count({ where: { userId: user.id, status: { not: 'archived' } } }),
     prisma.architecture.findMany({
@@ -114,6 +136,45 @@ export async function getDashboardOverview(user: AuthenticatedUser): Promise<Das
         updatedAt: true,
       },
     }),
+    prisma.userServiceHistory.count({ where: { userId: user.id } }),
+    prisma.awsService.count(),
+    prisma.userFavoriteService.findMany({
+      where: { userId: user.id },
+      orderBy: { createdAt: 'desc' },
+      take: 4,
+      select: {
+        service: {
+          select: {
+            id: true,
+            slug: true,
+            name: true,
+            shortName: true,
+            iconKey: true,
+            terraformSupport: true,
+            category: { select: { name: true } },
+          },
+        },
+      },
+    }),
+    prisma.userServiceHistory.findMany({
+      where: { userId: user.id },
+      orderBy: { lastExploredAt: 'desc' },
+      take: 4,
+      select: {
+        lastExploredAt: true,
+        service: {
+          select: {
+            id: true,
+            slug: true,
+            name: true,
+            shortName: true,
+            iconKey: true,
+            terraformSupport: true,
+            category: { select: { name: true } },
+          },
+        },
+      },
+    }),
   ]);
 
   const recentArchitectures: DashboardArchitectureSummary[] = architectures.map((arch) => ({
@@ -122,8 +183,29 @@ export async function getDashboardOverview(user: AuthenticatedUser): Promise<Das
     updatedAt: arch.updatedAt.toISOString(),
   }));
 
+  const favoriteServices: DashboardServicePreview[] = favoriteRows.map((row) => ({
+    id: row.service.id,
+    slug: row.service.slug,
+    name: row.service.name,
+    shortName: row.service.shortName,
+    iconKey: row.service.iconKey,
+    categoryName: row.service.category.name,
+    terraformSupport: row.service.terraformSupport,
+  }));
+
+  const recentlyExploredServices: DashboardServicePreview[] = historyRows.map((row) => ({
+    id: row.service.id,
+    slug: row.service.slug,
+    name: row.service.name,
+    shortName: row.service.shortName,
+    iconKey: row.service.iconKey,
+    categoryName: row.service.category.name,
+    terraformSupport: row.service.terraformSupport,
+    lastExploredAt: row.lastExploredAt.toISOString(),
+  }));
+
   // Derive activity strictly from real persisted database records (no fabricated events).
-  const recentActivity: DashboardActivityEntry[] = recentArchitectures.map((arch) => ({
+  const archActivities: DashboardActivityEntry[] = recentArchitectures.map((arch) => ({
     id: `arch-activity-${arch.id}`,
     title: `Architecture updated: ${arch.name}`,
     detail: `Region ${arch.region} · Status ${arch.status}`,
@@ -131,15 +213,31 @@ export async function getDashboardOverview(user: AuthenticatedUser): Promise<Das
     type: 'architecture',
   }));
 
+  const serviceActivities: DashboardActivityEntry[] = recentlyExploredServices.map((svc) => ({
+    id: `svc-activity-${svc.id}`,
+    title: `Explored ${svc.name}`,
+    detail: `Category: ${svc.categoryName}`,
+    timestamp: svc.lastExploredAt ?? new Date().toISOString(),
+    type: 'service',
+  }));
+
+  const recentActivity = [...archActivities, ...serviceActivities]
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+    .slice(0, 6);
+
   return {
     user,
     metrics: {
       totalArchitectures,
       savedProjects,
       awsServicesExplored: {
-        available: false,
-        value: null,
-        statusLabel: 'Unavailable until AWS Catalog (Phase 03)',
+        available: true,
+        value: exploredCount,
+        totalCatalogServices,
+        statusLabel:
+          totalCatalogServices > 0
+            ? `of ${totalCatalogServices} catalog services`
+            : 'Service catalog ready',
       },
       estimatedMonthlyCost: {
         available: false,
@@ -148,6 +246,8 @@ export async function getDashboardOverview(user: AuthenticatedUser): Promise<Das
       },
     },
     recentArchitectures,
+    favoriteServices,
+    recentlyExploredServices,
     quickStartTemplates: STATIC_QUICK_START_TEMPLATES,
     recentActivity,
   };

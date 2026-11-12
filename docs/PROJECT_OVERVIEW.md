@@ -24,12 +24,12 @@ Over time, CloudForge will enable cloud engineers, DevOps teams, and architects 
 - **Solutions Architects**: Design visual topologies with real-time cost visibility and exportable IaC artifacts.
 - **Software Teams**: Understand AWS service tradeoffs using curated starter templates before committing to production infrastructure.
 
-## 4. Current Scope — Phase 02
+## 4. Current Scope — Phase 03
 
-Phase 02 builds on the Phase 01 foundation to deliver **Authentication & Functional Dashboard**:
-- Secure user registration, login, session restoration, refresh-token rotation/revocation, and logout using `HttpOnly` cookies (`bcryptjs`, `jsonwebtoken`, `cookie-parser`, `express-rate-limit`).
-- PostgreSQL persistence for `User`, `RefreshSession`, and user-owned `Architecture` records via Prisma ORM.
-- Protected backend routes (`GET /api/auth/me`, `GET /api/dashboard/overview`) returning real database-backed architecture counts and honest empty/unavailable states for unimplemented Phase 03+ modules.
-- Protected frontend routes, login/registration/profile pages, password strength feedback, and a functional authenticated dashboard.
+Phase 03 builds on the Phase 01 foundation and Phase 02 authentication layer to deliver the **AWS Services Explorer**:
+- Metadata-driven catalog of **16 AWS categories** and **58 AWS services** persisted in PostgreSQL (`AwsCategory`, `AwsService`) with idempotent seeding (`npx prisma db seed`).
+- Clear architectural distinction between **AWS Services** and **AWS Resources** (`commonResources`), plus explicit separation between HashiCorp AWS Provider availability and CloudForge Phase 05 generator readiness.
+- Full-stack AWS Services Explorer (`/services` and `/services/:slug`) with search, category browsing, multi-criteria filtering, sorting, pagination, user-scoped favorites (`UserFavoriteService`), and deduplicated exploration history (`UserServiceHistory`).
+- Live Dashboard integration (`AWS Services Explored` metric, `Favorite AWS Services`, `Recently Explored Services`, and merged activity feed).
 
-Actual AWS integrations, AWS service catalog, visual canvas editing, cost engines, Terraform code generation, and cloud deployments remain deferred to Phases 03–06.
+Interactive React Flow canvas editing, architecture validation, cost engines, Terraform code generation, and cloud deployments remain deferred to Phases 04–06.

@@ -11,6 +11,17 @@ export interface DashboardArchitectureSummary {
   updatedAt: string;
 }
 
+export interface DashboardServicePreview {
+  id: string;
+  slug: string;
+  name: string;
+  shortName: string;
+  iconKey: string;
+  categoryName: string;
+  terraformSupport: string;
+  lastExploredAt?: string;
+}
+
 export interface DashboardQuickStartTemplate {
   id: string;
   title: string;
@@ -27,7 +38,7 @@ export interface DashboardActivityEntry {
   title: string;
   detail: string;
   timestamp: string;
-  type: 'account' | 'architecture';
+  type: 'account' | 'architecture' | 'service';
 }
 
 export interface DashboardOverviewData {
@@ -36,8 +47,9 @@ export interface DashboardOverviewData {
     totalArchitectures: number;
     savedProjects: number;
     awsServicesExplored: {
-      available: false;
-      value: null;
+      available: true;
+      value: number;
+      totalCatalogServices: number;
       statusLabel: string;
     };
     estimatedMonthlyCost: {
@@ -47,6 +59,8 @@ export interface DashboardOverviewData {
     };
   };
   recentArchitectures: DashboardArchitectureSummary[];
+  favoriteServices: DashboardServicePreview[];
+  recentlyExploredServices: DashboardServicePreview[];
   quickStartTemplates: DashboardQuickStartTemplate[];
   recentActivity: DashboardActivityEntry[];
 }

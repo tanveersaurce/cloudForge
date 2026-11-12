@@ -4,29 +4,28 @@
 
 Established the monorepo foundation (`frontend/` + `backend/`), Docker Compose PostgreSQL setup, Prisma ORM, `/api/health`, structured Pino logging, and the initial dark-themed SaaS dashboard shell.
 
-## Phase 02: Authentication & Functional Dashboard (Current Phase)
+## Phase 02: Authentication & Functional Dashboard (Completed)
 
-**Objective**: Transform CloudForge into a secure, authenticated application with real database-backed user sessions and personalized dashboard data.
+Delivered database-backed authentication (`User`, `RefreshSession`), `HttpOnly` cookie JWT rotation & reuse detection, rate limiting, protected routes, profile view, and personalized dashboard overview.
 
-### Phase 02 Deliverables
-1. **Database Models & Migration**: `User`, `RefreshSession`, and user-extensible `Architecture` models in `backend/prisma/schema.prisma`.
-2. **Authentication APIs**: `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/refresh` (with rotation & reuse detection), `POST /api/auth/logout`, and `GET /api/auth/me`.
-3. **Dashboard API**: `GET /api/dashboard/overview` returning real architecture counts, empty states for new users, and explicit unavailable flags for Phase 03–04 engines.
-4. **Frontend Auth & Session Flow**: Login, Registration (with password strength meter), Profile page, `ProtectedRoute` / `PublicOnlyRoute`, automatic `401` single-flight refresh, and User Profile Menu with logout.
-5. **Automated Tests**: Backend API/auth integration tests (`vitest` + `supertest`) and frontend form/redirect/dashboard/logout tests (`vitest` + React Testing Library).
+## Phase 03: AWS Services Explorer (Current Phase)
+
+**Objective**: Build a reusable, metadata-driven AWS Service Catalog and Services Explorer UI integrated with PostgreSQL and the authenticated user dashboard.
+
+### Phase 03 Deliverables
+1. **Database Models & Idempotent Seeding**: `AwsCategory`, `AwsService`, `UserFavoriteService`, `UserServiceHistory` in `backend/prisma/schema.prisma`, seeded with 16 categories and 58 AWS services via `npx prisma db seed`.
+2. **Backend Catalog & User Tracking APIs**: `/api/aws/categories`, `/api/aws/services`, `/api/aws/services/search`, `/api/aws/services/:slug`, `/api/aws/services/favorites`, `/api/aws/services/:id/favorite`, `/api/aws/services/recent`, `/api/aws/services/:id/explore`.
+3. **Dashboard Integration**: Live `awsServicesExplored` count, `favoriteServices`, `recentlyExploredServices`, and merged `recentActivity` in `GET /api/dashboard/overview` and `DashboardPage`.
+4. **Frontend Explorer & Detail UI**: `/services` and `/services/:slug` with centralized icon mapping, category sidebar, search/filter/sort/pagination, favorites, resource/configuration/Terraform readiness views, and related service navigation.
+5. **Automated Tests & Docs**: Backend API integration tests (`aws.test.ts`), frontend explorer/detail/dashboard tests (`awsServices.test.tsx`), and Phase 03 documentation (`AWS_SERVICE_CATALOG.md`, `DATABASE_SCHEMA.md`, `API_DOCUMENTATION.md`).
 
 ---
 
 ## Upcoming Phases (Roadmap)
 
-### Phase 03: AWS Service Catalog & Interactive Architecture Builder
-- Seed AWS service catalog metadata and implement full `Architecture` CRUD APIs.
-- Implement the visual canvas using `@xyflow/react` with drag-and-drop AWS service nodes, VPC/Subnet grouping, and property inspector.
-
-### Phase 04: Architecture Validation & Cost Estimation
-- Implement graph validation rules (e.g., public subnet routing, missing IAM/security boundaries, orphaned resources).
-- Display inline node warnings and a validation summary drawer.
-- Implement AWS cost estimation service with per-resource monthly pricing calculators and cost breakdown view (`Cost Explorer`).
+### Phase 04: Interactive Architecture Builder, Validation & Cost Estimation
+- Implement full `Architecture` CRUD APIs and interactive React Flow (`@xyflow/react`) canvas backed by Phase 03 catalog metadata.
+- Implement graph validation rules and AWS monthly cost estimation (`Cost Explorer`).
 
 ### Phase 05: Terraform Code Generation & Export
 - Build deterministic HCL template engine mapping CloudForge nodes/edges into `main.tf`, `variables.tf`, `outputs.tf`, and `providers.tf`.

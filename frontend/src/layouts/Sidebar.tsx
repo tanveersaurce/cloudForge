@@ -155,19 +155,19 @@ export function Sidebar() {
           {!collapsed ? (
             <div className="rounded-lg border border-border-subtle bg-canvas/70 p-3">
               <div className="flex items-center justify-between text-xs font-medium text-slate-200">
-                <span>Phase 02 Active</span>
-                <span className="font-mono text-[10px] text-emerald-400">AUTH</span>
+                <span>Phase 03 Active</span>
+                <span className="font-mono text-[10px] text-emerald-400">AWS</span>
               </div>
               <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
-                Authenticated workspace. Canvas &amp; IaC modules launch in Phase 03+.
+                AWS Services Explorer active. Architecture Builder launches in Phase 04.
               </p>
             </div>
           ) : (
             <div
               className="flex justify-center py-1 font-mono text-[10px] text-slate-500"
-              title="Phase 01 Local Foundation"
+              title="Phase 03 AWS Services Explorer"
             >
-              P01
+              P03
             </div>
           )}
         </div>

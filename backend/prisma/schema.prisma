@@ -7,16 +7,32 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum TerraformSupportStatus {
+  SUPPORTED
+  PARTIAL
+  NOT_IMPLEMENTED
+  NOT_APPLICABLE
+}
+
+enum AwsSupportLevel {
+  CORE
+  STANDARD
+  EXTENDED
+  PREVIEW
+}
+
 model User {
-  id              String           @id @default(cuid())
-  name            String
-  email           String           @unique
-  passwordHash    String
-  avatar          String?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  refreshSessions RefreshSession[]
-  architectures   Architecture[]
+  id               String                @id @default(cuid())
+  name             String
+  email            String                @unique
+  passwordHash     String
+  avatar           String?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  refreshSessions  RefreshSession[]
+  architectures    Architecture[]
+  favoriteServices UserFavoriteService[]
+  serviceHistory   UserServiceHistory[]
 
   @@map("users")
 }
@@ -37,7 +53,7 @@ model RefreshSession {
   @@map("refresh_sessions")
 }
 
-// Extensible architecture model; full CRUD and canvas graph state arrive in Phase 03+.
+// Extensible architecture model; full CRUD and canvas graph state arrive in later phases.
 model Architecture {
   id            String   @id @default(cuid())
   userId        String?
@@ -52,4 +68,86 @@ model Architecture {
 
   @@index([userId, updatedAt])
   @@map("architectures")
+}
+
+model AwsCategory {
+  id          String       @id @default(cuid())
+  slug        String       @unique
+  name        String
+  description String
+  iconKey     String
+  sortOrder   Int          @default(0)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  services    AwsService[]
+
+  @@index([sortOrder])
+  @@map("aws_categories")
+}
+
+model AwsService {
+  id                            String                 @id @default(cuid())
+  slug                          String                 @unique
+  name                          String
+  shortName                     String
+  officialServiceName           String
+  categoryId                    String
+  shortDescription              String
+  detailedDescription           String
+  iconKey                       String
+  awsConsoleUrl                 String
+  officialDocumentationUrl      String
+  primaryUseCases               String[]
+  keyFeatures                   String[]
+  pricingModel                  String
+  supportedRegions              String
+  relatedServiceSlugs           String[]
+  commonResources               Json
+  configurationSchema           Json
+  terraformSupport              TerraformSupportStatus
+  terraformProviderAvailable    Boolean                @default(true)
+  terraformCloudForgeStatusNote String
+  terraformResourceTypes        String[]
+  terraformDocsUrl              String?
+  supportLevel                  AwsSupportLevel        @default(STANDARD)
+  tags                          String[]
+  createdAt                     DateTime               @default(now())
+  updatedAt                     DateTime               @updatedAt
+  category                      AwsCategory            @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  favoritedBy                   UserFavoriteService[]
+  exploredBy                    UserServiceHistory[]
+
+  @@index([categoryId])
+  @@index([terraformSupport])
+  @@index([supportLevel])
+  @@index([name])
+  @@map("aws_services")
+}
+
+model UserFavoriteService {
+  id        String     @id @default(cuid())
+  userId    String
+  serviceId String
+  createdAt DateTime   @default(now())
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  service   AwsService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, serviceId])
+  @@index([userId, createdAt])
+  @@map("user_favorite_services")
+}
+
+model UserServiceHistory {
+  id              String     @id @default(cuid())
+  userId          String
+  serviceId       String
+  viewCount       Int        @default(1)
+  firstExploredAt DateTime   @default(now())
+  lastExploredAt  DateTime   @default(now())
+  user            User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  service         AwsService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, serviceId])
+  @@index([userId, lastExploredAt])
+  @@map("user_service_history")
 }

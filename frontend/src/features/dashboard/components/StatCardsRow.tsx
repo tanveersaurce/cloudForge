@@ -20,10 +20,10 @@ export function StatCardsRow({ metrics }: StatCardsRowProps) {
     {
       id: 'aws-services-explored',
       label: 'AWS Services Explored',
-      value: '—',
+      value: String(metrics.awsServicesExplored.value),
       sublabel: metrics.awsServicesExplored.statusLabel,
-      badge: 'PHASE 03',
-      available: false,
+      badge: 'LIVE DB',
+      available: metrics.awsServicesExplored.available,
       Icon: CloudCog,
     },
     {

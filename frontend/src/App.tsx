@@ -6,6 +6,8 @@ import { useAuth } from '@/features/auth/hooks/useAuth';
 import { LoginPage } from '@/features/auth/pages/LoginPage';
 import { ProfilePage } from '@/features/auth/pages/ProfilePage';
 import { RegisterPage } from '@/features/auth/pages/RegisterPage';
+import { AwsServiceDetailPage } from '@/features/aws-services/pages/AwsServiceDetailPage';
+import { AwsServicesExplorerPage } from '@/features/aws-services/pages/AwsServicesExplorerPage';
 import { DashboardPage } from '@/features/dashboard/pages/DashboardPage';
 import { DashboardLayout } from '@/layouts/DashboardLayout';
 import { NotFoundPage } from '@/pages/NotFoundPage';
@@ -24,7 +26,8 @@ export function AppRoutes() {
           <Route index element={<DashboardPage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/builder" element={<PlannedModulePage moduleId="builder" />} />
-          <Route path="/services" element={<PlannedModulePage moduleId="aws-services" />} />
+          <Route path="/services" element={<AwsServicesExplorerPage />} />
+          <Route path="/services/:slug" element={<AwsServiceDetailPage />} />
           <Route path="/architectures" element={<PlannedModulePage moduleId="architectures" />} />
           <Route path="/cost-explorer" element={<PlannedModulePage moduleId="cost-explorer" />} />
           <Route path="/terraform" element={<PlannedModulePage moduleId="terraform" />} />

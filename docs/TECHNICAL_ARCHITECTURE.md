@@ -106,16 +106,16 @@ CloudForge uses stateless short-lived JWT access tokens (`15m`) paired with stat
 3. **Module Routing**: Requests under `/api/*` route to `/api/health`, `/api/auth`, and `/api/dashboard`.
 4. **Error Handling**: Unmatched routes pass to `notFoundHandler` (404 `ApiError`). All errors flow to `errorHandler`, returning a uniform JSON envelope without leaking stack traces in production.
 
-## 6. Health & Dashboard API Contracts
+## 6. Health, Catalog & Dashboard API Contracts
 
 - **`GET /api/health`**: Returns overall service metadata and PostgreSQL connectivity (`200` when connected, `503` when disconnected).
 - **`GET /api/health/live`**: Lightweight liveness probe (`200 OK`).
-- **`GET /api/dashboard/overview`** *(authenticated)*: Returns the user profile, live PostgreSQL counts (`totalArchitectures`, `savedProjects`), explicit unavailable markers for Phase 03/04 engines (`awsServicesExplored`, `estimatedMonthlyCost`), real persisted `recentArchitectures` and `recentActivity`, and clearly labeled static `quickStartTemplates`.
+- **`GET /api/aws/*`** *(Phase 03)*: Serves 16 categories and 58 catalog services (`/categories`, `/services`, `/services/search`, `/services/:slug`) plus authenticated user favorites and exploration history (`/favorites`, `/recent`, `/:id/favorite`, `/:id/explore`).
+- **`GET /api/dashboard/overview`** *(authenticated)*: Returns the user profile, live PostgreSQL counts (`totalArchitectures`, `savedProjects`, `awsServicesExplored`), explicit unavailable marker for Phase 04 cost engine (`estimatedMonthlyCost`), real persisted `recentArchitectures`, `favoriteServices`, `recentlyExploredServices`, `recentActivity`, and clearly labeled static `quickStartTemplates`.
 
-## 6. Future Backend & Frontend Modules
+## 7. Future Backend & Frontend Modules
 
 Planned modules for upcoming phases include:
-- **`aws-catalog`**: Curated AWS service definitions, categories, icons, default properties, and validation schemas.
 - **`architectures`**: Persistence and versioning of architecture graphs (nodes, edges, region, metadata).
 - **`validation`**: Graph topology analyzer checking security, networking, and dependency rules.
 - **`cost-estimator`**: Pricing catalog and monthly infrastructure cost breakdown engine.

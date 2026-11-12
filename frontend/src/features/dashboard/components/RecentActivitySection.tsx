@@ -1,4 +1,4 @@
-import { Activity, Boxes, Clock, Terminal } from 'lucide-react';
+import { Activity, Boxes, Clock, CloudCog, Terminal } from 'lucide-react';
 import { Badge } from '@/components/Badge';
 import { Card, CardHeader } from '@/components/Card';
 import type { DashboardActivityEntry } from '../types/dashboard.types';
@@ -35,7 +35,12 @@ export function RecentActivitySection({ activities }: RecentActivitySectionProps
       ) : (
         <div className="divide-y divide-border-subtle">
           {activities.map((item) => {
-            const Icon = item.type === 'architecture' ? Boxes : Terminal;
+            const Icon =
+              item.type === 'architecture'
+                ? Boxes
+                : item.type === 'service'
+                  ? CloudCog
+                  : Terminal;
             const formattedTime = new Date(item.timestamp).toLocaleString('en-US', {
               month: 'short',
               day: 'numeric',

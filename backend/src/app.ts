@@ -7,6 +7,7 @@ import { errorHandler } from './middleware/errorHandler.js';
 import { notFoundHandler } from './middleware/notFoundHandler.js';
 import { requestLogger } from './middleware/requestLogger.js';
 import { authRouter } from './modules/auth/auth.routes.js';
+import { awsRouter } from './modules/aws/aws.routes.js';
 import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
 import { healthRouter } from './modules/health/health.routes.js';
 
@@ -39,7 +40,7 @@ export function createApp() {
       success: true,
       data: {
         name: 'CloudForge API',
-        phase: 'Phase 02 — Authentication & Functional Dashboard',
+        phase: 'Phase 03 — AWS Services Explorer',
         healthEndpoint: '/api/health',
       },
       timestamp: new Date().toISOString(),
@@ -48,6 +49,7 @@ export function createApp() {
 
   app.use('/api/health', healthRouter);
   app.use('/api/auth', authRouter);
+  app.use('/api/aws', awsRouter);
   app.use('/api/dashboard', dashboardRouter);
 
   app.use(notFoundHandler);
