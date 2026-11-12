@@ -22,9 +22,10 @@ const mockOverview: DashboardOverviewData = {
     totalArchitectures: 0,
     savedProjects: 0,
     awsServicesExplored: {
-      available: false,
-      value: null,
-      statusLabel: 'Unavailable until AWS Catalog (Phase 03)',
+      available: true,
+      value: 0,
+      totalCatalogServices: 58,
+      statusLabel: '0 of 58 catalog services',
     },
     estimatedMonthlyCost: {
       available: false,
@@ -33,6 +34,8 @@ const mockOverview: DashboardOverviewData = {
     },
   },
   recentArchitectures: [],
+  favoriteServices: [],
+  recentlyExploredServices: [],
   quickStartTemplates: [],
   recentActivity: [],
 };

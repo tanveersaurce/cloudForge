@@ -17,11 +17,11 @@ export function WelcomeHeader({ userName }: WelcomeHeaderProps) {
           <h1 className="text-xl font-semibold tracking-tight text-slate-100 sm:text-2xl">
             Welcome back, {userName}
           </h1>
-          <Badge variant="info">Phase 02 Workspace</Badge>
+          <Badge variant="info">Phase 03 Workspace</Badge>
         </div>
         <p className="max-w-2xl text-sm text-slate-400">
-          Your authenticated CloudForge workspace. Architecture counts and activity below reflect
-          your persisted PostgreSQL records.
+          Your authenticated CloudForge workspace. Architecture counts, explored AWS services, and
+          activity below reflect your persisted PostgreSQL records.
         </p>
       </div>
 
@@ -46,9 +46,9 @@ export function PhaseNoticeStrip() {
       <div className="flex items-center gap-2">
         <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-sky-400" />
         <span>
-          <strong className="font-medium text-slate-100">Authenticated Session:</strong> Protected
-          by HttpOnly cookies. AWS service catalog, React Flow canvas, cost estimation, and
-          Terraform generation arrive in Phases 03–06.
+          <strong className="font-medium text-slate-100">Phase 03 Active:</strong> Authenticated via
+          HttpOnly cookies with live AWS Services Explorer. React Flow builder, cost estimation, and
+          Terraform generation arrive in Phases 04–06.
         </span>
       </div>
     </div>

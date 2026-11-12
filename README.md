@@ -2,7 +2,7 @@
 
 **CloudForge** is an interactive AWS Cloud Architecture Builder and Infrastructure Automation Platform. It enables engineers and architects to visually design AWS topologies, validate configurations, estimate monthly costs, generate modular Terraform projects, and deploy infrastructure with explicit approval.
 
-> **Current Status**: **Phase 02 — Authentication & Functional Dashboard**
+> **Current Status**: **Phase 03 — AWS Services Explorer**
 
 ## Architecture & Tech Stack
 
@@ -15,6 +15,9 @@ See the [docs/](docs/) directory for full documentation:
 - [Technical Architecture](docs/TECHNICAL_ARCHITECTURE.md)
 - [Implementation Plan](docs/IMPLEMENTATION_PLAN.md)
 - [Development Guidelines](docs/DEVELOPMENT_GUIDELINES.md)
+- [AWS Service Catalog](docs/AWS_SERVICE_CATALOG.md)
+- [Database Schema](docs/DATABASE_SCHEMA.md)
+- [API Documentation](docs/API_DOCUMENTATION.md)
 
 ## Quick Start (Local Development)
 
@@ -36,7 +39,8 @@ cd backend
 cp .env.example .env
 npm install
 npx prisma generate
-npx prisma migrate dev --name init
+npx prisma migrate dev
+npx prisma db seed
 npm run dev
 ```
 

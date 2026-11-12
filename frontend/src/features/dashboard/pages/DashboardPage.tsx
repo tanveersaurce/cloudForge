@@ -9,6 +9,7 @@ import { CreateArchitectureModal } from '../components/CreateArchitectureModal';
 import { QuickStartTemplatesSection } from '../components/QuickStartTemplatesSection';
 import { RecentActivitySection } from '../components/RecentActivitySection';
 import { RecentArchitecturesSection } from '../components/RecentArchitecturesSection';
+import { ServicesSnapshotSection } from '../components/ServicesSnapshotSection';
 import { StatCardsRow } from '../components/StatCardsRow';
 import { TemplatePreviewModal } from '../components/TemplatePreviewModal';
 import { PhaseNoticeStrip, WelcomeHeader } from '../components/WelcomeHeader';
@@ -95,6 +96,10 @@ export function DashboardPage() {
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
         <div className="space-y-6 xl:col-span-2">
           <RecentArchitecturesSection architectures={overview.recentArchitectures} />
+          <ServicesSnapshotSection
+            favoriteServices={overview.favoriteServices}
+            recentlyExploredServices={overview.recentlyExploredServices}
+          />
           <QuickStartTemplatesSection templates={overview.quickStartTemplates} />
         </div>
 

@@ -151,6 +151,16 @@ const mockPrisma = {
     count: vi.fn(async () => 0),
     findMany: vi.fn(async () => []),
   },
+  userServiceHistory: {
+    count: vi.fn(async () => 0),
+    findMany: vi.fn(async () => []),
+  },
+  userFavoriteService: {
+    findMany: vi.fn(async () => []),
+  },
+  awsService: {
+    count: vi.fn(async () => 56),
+  },
 };
 
 vi.mock('../../config/database.js', () => ({
@@ -281,7 +291,8 @@ describe('Authentication, Session Rotation, and Protected Dashboard APIs', () =>
     expect(dashRes.status).toBe(200);
     expect(dashRes.body.data.metrics.totalArchitectures).toBe(0);
     expect(dashRes.body.data.metrics.savedProjects).toBe(0);
-    expect(dashRes.body.data.metrics.awsServicesExplored.available).toBe(false);
+    expect(dashRes.body.data.metrics.awsServicesExplored.available).toBe(true);
+    expect(dashRes.body.data.metrics.awsServicesExplored.value).toBe(0);
     expect(dashRes.body.data.metrics.estimatedMonthlyCost.available).toBe(false);
     expect(dashRes.body.data.recentArchitectures).toEqual([]);
   });

@@ -24,7 +24,6 @@ export const SIDEBAR_NAV_ITEMS: NavItemConfig[] = [
     id: 'aws-services',
     label: 'AWS Services',
     path: '/services',
-    phaseLabel: 'Phase 02',
     description: 'Curated catalog of AWS services, architectural use cases, and configuration defaults.',
     plannedCapabilities: [
       'Browse Compute, Networking, Storage, Database, Serverless, and Security services',
