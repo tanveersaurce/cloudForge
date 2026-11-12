@@ -1,16 +1,17 @@
-import { Info } from 'lucide-react';
-import { useState } from 'react';
+import { Loader2 } from 'lucide-react';
+import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Badge } from '@/components/Badge';
 import { Button } from '@/components/Button';
 import { Modal } from '@/components/Modal';
+import { createArchitecture } from '@/features/architecture-builder/services/architectureService';
+import { ApiClientError } from '@/services/apiClient';
 import { useUiStore } from '@/store/useUiStore';
 
 const AWS_REGIONS = [
-  'us-east-1 (N. Virginia)',
-  'us-west-2 (Oregon)',
-  'eu-west-1 (Ireland)',
-  'ap-south-1 (Mumbai)',
+  { value: 'us-east-1', label: 'us-east-1 (N. Virginia)' },
+  { value: 'us-west-2', label: 'us-west-2 (Oregon)' },
+  { value: 'eu-west-1', label: 'eu-west-1 (Ireland)' },
+  { value: 'ap-south-1', label: 'ap-south-1 (Mumbai)' },
 ];
 
 export function CreateArchitectureModal() {
@@ -19,23 +20,57 @@ export function CreateArchitectureModal() {
   const setOpen = useUiStore((state) => state.setCreateModalOpen);
 
   const [name, setName] = useState('production-core-vpc');
-  const [region, setRegion] = useState(AWS_REGIONS[0]);
+  const [description, setDescription] = useState('');
+  const [region, setRegion] = useState(AWS_REGIONS[0].value);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      setError('Architecture name is required.');
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+    try {
+      const created = await createArchitecture({
+        name: trimmedName,
+        description: description.trim() || undefined,
+        region,
+      });
+      setOpen(false);
+      setDescription('');
+      navigate(`/architecture-builder/${created.id}`);
+    } catch (err) {
+      setError(
+        err instanceof ApiClientError ? err.message : 'Unable to create architecture.',
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <Modal
       open={open}
-      onClose={() => setOpen(false)}
+      onClose={() => {
+        if (!submitting) {
+          setError(null);
+          setOpen(false);
+        }
+      }}
       title="Create New Architecture"
-      subtitle="Phase 03 Architecture Builder Preview"
+      subtitle="Initialize a persistent AWS topology workspace"
     >
-      <div className="space-y-4">
-        <div className="flex items-start gap-2.5 rounded-lg border border-sky-500/25 bg-sky-500/5 p-3 text-xs text-slate-300">
-          <Info className="mt-0.5 h-4 w-4 shrink-0 text-sky-400" />
-          <p>
-            Full architecture creation and the interactive{' '}
-            <code className="font-mono text-sky-300">@xyflow/react</code> canvas launch in Phase 03.
-          </p>
-        </div>
+      <form onSubmit={(e) => void handleSubmit(e)} className="space-y-4">
+        {error ? (
+          <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+            {error}
+          </div>
+        ) : null}
 
         <div className="space-y-1.5">
           <label htmlFor="arch-name-input" className="block text-xs font-medium text-slate-300">
@@ -46,7 +81,26 @@ export function CreateArchitectureModal() {
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full rounded-lg border border-border-subtle bg-canvas px-3 py-2 font-mono text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+            disabled={submitting}
+            required
+            maxLength={120}
+            className="w-full rounded-lg border border-border-subtle bg-canvas px-3 py-2 font-mono text-sm text-slate-100 focus:border-sky-500 focus:outline-none disabled:opacity-50"
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <label htmlFor="arch-desc-input" className="block text-xs font-medium text-slate-300">
+            Description <span className="text-slate-500">(optional)</span>
+          </label>
+          <textarea
+            id="arch-desc-input"
+            rows={2}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            disabled={submitting}
+            maxLength={500}
+            placeholder="High-availability multi-AZ web workload..."
+            className="w-full rounded-lg border border-border-subtle bg-canvas px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:border-sky-500 focus:outline-none disabled:opacity-50"
           />
         </div>
 
@@ -58,36 +112,38 @@ export function CreateArchitectureModal() {
             id="arch-region-select"
             value={region}
             onChange={(e) => setRegion(e.target.value)}
-            className="w-full rounded-lg border border-border-subtle bg-canvas px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+            disabled={submitting}
+            className="w-full rounded-lg border border-border-subtle bg-canvas px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none disabled:opacity-50"
           >
             {AWS_REGIONS.map((item) => (
-              <option key={item} value={item}>
-                {item}
+              <option key={item.value} value={item.value}>
+                {item.label}
               </option>
             ))}
           </select>
         </div>
 
-        <div className="flex items-center justify-between rounded-lg border border-border-subtle bg-canvas/60 px-3 py-2.5 text-xs">
-          <span className="text-slate-400">Target Canvas Engine</span>
-          <Badge variant="info">React Flow (@xyflow/react) &middot; Phase 03</Badge>
-        </div>
-
         <div className="flex items-center justify-end gap-2 pt-2">
-          <Button variant="ghost" onClick={() => setOpen(false)}>
-            Close
-          </Button>
           <Button
-            variant="primary"
-            onClick={() => {
-              setOpen(false);
-              navigate('/builder');
-            }}
+            type="button"
+            variant="ghost"
+            disabled={submitting}
+            onClick={() => setOpen(false)}
           >
-            View Builder Roadmap
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" disabled={submitting}>
+            {submitting ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <span>Creating...</span>
+              </>
+            ) : (
+              <span>Create &amp; Open Canvas</span>
+            )}
           </Button>
         </div>
-      </div>
+      </form>
     </Modal>
   );
 }

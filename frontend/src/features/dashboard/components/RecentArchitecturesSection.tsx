@@ -1,4 +1,5 @@
 import { ArrowUpRight, Boxes, Globe, Layers, Plus, SearchX } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { Badge, type BadgeVariant } from '@/components/Badge';
 import { Button } from '@/components/Button';
 import { Card, CardHeader } from '@/components/Card';
@@ -46,17 +47,17 @@ export function RecentArchitecturesSection({ architectures }: RecentArchitecture
           </div>
           <p className="mt-3 text-sm font-medium text-slate-200">No architectures saved yet</p>
           <p className="mt-1 max-w-sm text-xs text-slate-400">
-            Your workspace starts clean. Full architecture persistence and the visual canvas launch
-            in Phases 02–03; meanwhile, explore the Quick Start blueprints below.
+            Your workspace starts clean. Create an architecture project to design your AWS topology
+            on the interactive canvas.
           </p>
           <Button
-            variant="secondary"
+            variant="primary"
             size="sm"
             className="mt-4"
             onClick={() => setCreateModalOpen(true)}
           >
             <Plus className="h-3.5 w-3.5" />
-            <span>Preview Architecture Setup</span>
+            <span>Create Architecture</span>
           </Button>
         </div>
       ) : filteredArchitectures.length === 0 ? (
@@ -116,14 +117,21 @@ export function RecentArchitecturesSection({ architectures }: RecentArchitecture
                     <span className="text-[11px] text-slate-500">{formattedDate}</span>
                   </div>
 
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => setSelectedArchitecture(arch)}
-                  >
-                    <span>Inspect</span>
-                    <ArrowUpRight className="h-3.5 w-3.5" />
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setSelectedArchitecture(arch)}
+                    >
+                      <span>Inspect</span>
+                    </Button>
+                    <Link to={`/architecture-builder/${arch.id}`}>
+                      <Button variant="primary" size="sm">
+                        <span>Open Canvas</span>
+                        <ArrowUpRight className="h-3.5 w-3.5" />
+                      </Button>
+                    </Link>
+                  </div>
                 </div>
               </div>
             );
