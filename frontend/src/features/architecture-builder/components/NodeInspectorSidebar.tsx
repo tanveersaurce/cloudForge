@@ -11,8 +11,8 @@ import {
   MapPin,
   PanelRightClose,
   PanelRightOpen,
+  Sliders,
   SlidersHorizontal,
-  Sparkles,
   Trash2,
 } from 'lucide-react';
 import { AwsServiceIcon } from '@/features/aws-services/components/AwsServiceIcon';
@@ -29,12 +29,15 @@ import {
   getCompatibleRelationships,
   validateConnectionCompatibility,
 } from '../utils/awsCompatibilityRegistry';
+import { getResourceConfigurationSchema } from '../utils/configurationSchemaRegistry';
+import { validateNodeConfiguration } from '../utils/configurationValidation';
 import { validateGraphStructure } from '../utils/graphEngine';
 import {
   ALL_RELATIONSHIP_TYPES,
   normalizeEdgeData,
   RELATIONSHIP_DEFINITIONS,
 } from '../utils/relationshipModel';
+import { DynamicConfigForm } from './configuration/DynamicConfigForm';
 
 interface NodeInspectorSidebarProps {
   className?: string;
@@ -90,6 +93,7 @@ export function NodeInspectorSidebar({
   const selectedNodeId = useArchitectureBuilderStore((s) => s.selectedNodeId);
   const selectedEdgeId = useArchitectureBuilderStore((s) => s.selectedEdgeId);
   const updateNodeMetadata = useArchitectureBuilderStore((s) => s.updateNodeMetadata);
+  const updateNodeConfiguration = useArchitectureBuilderStore((s) => s.updateNodeConfiguration);
   const updateEdgeMetadata = useArchitectureBuilderStore((s) => s.updateEdgeMetadata);
   const reverseEdgeDirection = useArchitectureBuilderStore((s) => s.reverseEdgeDirection);
   const duplicateNode = useArchitectureBuilderStore((s) => s.duplicateNode);
@@ -143,7 +147,7 @@ export function NodeInspectorSidebar({
     <aside
       aria-label="Properties Inspector"
       className={cn(
-        'flex h-full w-72 shrink-0 flex-col border-l border-border-subtle bg-surface/95 backdrop-blur-md lg:w-80',
+        'flex h-full w-80 shrink-0 flex-col border-l border-border-subtle bg-surface/95 backdrop-blur-md lg:w-96',
         className,
       )}
     >
@@ -176,7 +180,10 @@ export function NodeInspectorSidebar({
         {selectedNode ? (
           <SelectedNodePanel
             node={selectedNode}
+            canvasNodes={nodes}
+            canvasEdges={edges}
             onUpdateMetadata={updateNodeMetadata}
+            onUpdateConfiguration={updateNodeConfiguration}
             onDuplicate={duplicateNode}
             onDelete={deleteNode}
           />
@@ -347,9 +354,15 @@ function EmptySelectionPanel({
 
 interface SelectedNodePanelProps {
   node: ArchitectureFlowNode;
+  canvasNodes: ArchitectureFlowNode[];
+  canvasEdges: ArchitectureFlowEdge[];
   onUpdateMetadata: (
     nodeId: string,
     patch: { label?: string; description?: string },
+  ) => void;
+  onUpdateConfiguration: (
+    nodeId: string,
+    metadata: Record<string, unknown>,
   ) => void;
   onDuplicate: (nodeId: string) => void;
   onDelete: (nodeId: string) => void;
@@ -357,14 +370,56 @@ interface SelectedNodePanelProps {
 
 function SelectedNodePanel({
   node,
+  canvasNodes,
+  canvasEdges,
   onUpdateMetadata,
+  onUpdateConfiguration,
   onDuplicate,
   onDelete,
 }: SelectedNodePanelProps) {
   const { data, position } = node;
 
+  const schema = useMemo(
+    () => getResourceConfigurationSchema(data.resourceType, data.serviceName),
+    [data.resourceType, data.serviceName],
+  );
+
+  const validation = useMemo(() => {
+    return validateNodeConfiguration(
+      schema,
+      data.metadata ?? {},
+      canvasNodes,
+      canvasEdges,
+    );
+  }, [schema, data.metadata, canvasNodes, canvasEdges]);
+
+  const configStatus = useMemo(() => {
+    if (!data.metadata || Object.keys(data.metadata).length === 0) {
+      return {
+        label: 'Default Draft',
+        className: 'border-sky-500/30 bg-sky-500/10 text-sky-300',
+      };
+    }
+    if (validation.errors.length > 0) {
+      return {
+        label: `${validation.errors.length} Issues`,
+        className: 'border-rose-500/40 bg-rose-500/10 text-rose-300',
+      };
+    }
+    if (validation.warnings.length > 0) {
+      return {
+        label: 'Warning',
+        className: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+      };
+    }
+    return {
+      label: 'Configured',
+      className: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+    };
+  }, [data.metadata, validation]);
+
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {/* Identity Header */}
       <section className="rounded-xl border border-border-subtle bg-surface-elevated/80 p-3.5">
         <div className="flex items-start gap-3">
@@ -380,6 +435,14 @@ function SelectedNodePanel({
               {data.resourceName}
             </h3>
           </div>
+          <span
+            className={cn(
+              'rounded-full border px-2 py-0.5 font-mono text-[10px] font-medium shrink-0',
+              configStatus.className,
+            )}
+          >
+            {configStatus.label}
+          </span>
         </div>
 
         <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -396,8 +459,8 @@ function SelectedNodePanel({
         </div>
       </section>
 
-      {/* Editable Metadata */}
-      <section className="space-y-3.5">
+      {/* Editable Display Metadata */}
+      <section className="rounded-xl border border-border-subtle bg-surface-elevated/40 p-3.5 space-y-3">
         <div>
           <label
             htmlFor="inspector-node-label"
@@ -411,7 +474,7 @@ function SelectedNodePanel({
             value={data.label}
             onChange={(e) => onUpdateMetadata(node.id, { label: e.target.value })}
             placeholder="Enter display label"
-            className="mt-1.5 w-full rounded-lg border border-border-subtle bg-canvas/80 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 transition-colors focus:border-sky-500/60 focus:outline-none focus:ring-1 focus:ring-sky-500/40"
+            className="mt-1.5 w-full rounded-lg border border-border-subtle bg-canvas/80 px-3 py-2 text-xs text-slate-100 placeholder-slate-500 transition-colors focus:border-sky-500/60 focus:outline-none focus:ring-1 focus:ring-sky-500/40"
           />
         </div>
 
@@ -424,13 +487,31 @@ function SelectedNodePanel({
           </label>
           <textarea
             id="inspector-node-description"
-            rows={3}
+            rows={2}
             value={data.description}
             onChange={(e) => onUpdateMetadata(node.id, { description: e.target.value })}
             placeholder="Describe this resource's role in the architecture..."
             className="mt-1.5 w-full resize-none rounded-lg border border-border-subtle bg-canvas/80 px-3 py-2 text-xs leading-relaxed text-slate-200 placeholder-slate-500 transition-colors focus:border-sky-500/60 focus:outline-none focus:ring-1 focus:ring-sky-500/40"
           />
         </div>
+      </section>
+
+      {/* Dynamic AWS Configuration Engine */}
+      <section className="space-y-2">
+        <div className="flex items-center gap-2 px-1">
+          <Sliders className="h-3.5 w-3.5 text-sky-400" />
+          <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-300">
+            AWS Resource Configuration
+          </h4>
+        </div>
+
+        <DynamicConfigForm
+          node={node}
+          schema={schema}
+          canvasNodes={canvasNodes}
+          canvasEdges={canvasEdges}
+          onSave={(updatedConfig) => onUpdateConfiguration(node.id, updatedConfig)}
+        />
       </section>
 
       {/* Coordinates Readout */}
@@ -450,19 +531,8 @@ function SelectedNodePanel({
         </div>
       </section>
 
-      {/* Phase 06 Notice */}
-      <section className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-3">
-        <div className="flex items-start gap-2">
-          <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-indigo-400" />
-          <p className="text-[11px] leading-relaxed text-slate-300">
-            Dynamic AWS resource configuration forms (EC2, RDS, VPC, IAM, and Terraform
-            attributes) arrive in <span className="font-semibold text-indigo-300">Phase 06</span>.
-          </p>
-        </div>
-      </section>
-
       {/* Node Actions */}
-      <section className="grid grid-cols-2 gap-2 border-t border-border-subtle pt-4">
+      <section className="grid grid-cols-2 gap-2 border-t border-border-subtle pt-3">
         <button
           type="button"
           onClick={() => onDuplicate(node.id)}
