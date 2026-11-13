@@ -28,6 +28,12 @@ import type {
   SaveStatus,
 } from '@/features/architecture-builder/types/architecture.types';
 import { normalizeEdgeData } from '@/features/architecture-builder/utils/relationshipModel';
+import { runClientValidation } from '@/features/validation/engine/clientValidationEngine';
+import { validateArchitectureApi } from '@/features/validation/services/validationService';
+import type {
+  ValidationEngineResult,
+  ValidationFinding,
+} from '@/features/validation/types/validation.types';
 
 interface GraphSnapshot {
   nodes: ArchitectureFlowNode[];
@@ -138,6 +144,13 @@ interface ArchitectureBuilderState {
   past: GraphSnapshot[];
   future: GraphSnapshot[];
 
+  // Phase 07: Architecture Validation
+  validationResult: ValidationEngineResult | null;
+  isValidating: boolean;
+  isValidationDrawerOpen: boolean;
+  highlightedValidationNodeIds: string[];
+  highlightedValidationEdgeIds: string[];
+
   hydrateArchitecture: (architecture: ArchitectureDetailDto) => void;
   resetBuilder: () => void;
   setViewport: (viewport: Viewport) => void;
@@ -166,6 +179,12 @@ interface ArchitectureBuilderState {
   redo: () => void;
   saveCanvas: () => Promise<boolean>;
   renameArchitecture: (name: string) => Promise<boolean>;
+
+  // Validation Actions
+  setValidationDrawerOpen: (open: boolean) => void;
+  runValidation: (architectureId?: string) => Promise<void>;
+  highlightFinding: (finding: ValidationFinding) => void;
+  clearValidationHighlights: () => void;
 }
 
 function pushHistory(
@@ -206,11 +225,22 @@ export const useArchitectureBuilderStore = create<ArchitectureBuilderState>((set
   past: [],
   future: [],
 
-  hydrateArchitecture: (architecture) =>
+  // Phase 07: Architecture Validation Initial State
+  validationResult: null,
+  isValidating: false,
+  isValidationDrawerOpen: false,
+  highlightedValidationNodeIds: [],
+  highlightedValidationEdgeIds: [],
+
+  hydrateArchitecture: (architecture) => {
+    const nodes = toFlowNodes(architecture.nodes ?? []);
+    const edges = toFlowEdges(architecture.edges ?? []);
+    const initialValidation = runClientValidation(architecture.id, nodes, edges);
+
     set({
       architecture,
-      nodes: toFlowNodes(architecture.nodes ?? []),
-      edges: toFlowEdges(architecture.edges ?? []),
+      nodes,
+      edges,
       viewport: architecture.viewport ?? DEFAULT_VIEWPORT,
       selectedNodeId: null,
       selectedEdgeId: null,
@@ -223,7 +253,11 @@ export const useArchitectureBuilderStore = create<ArchitectureBuilderState>((set
       pendingSaveRequested: false,
       past: [],
       future: [],
-    }),
+      validationResult: initialValidation,
+      highlightedValidationNodeIds: [],
+      highlightedValidationEdgeIds: [],
+    });
+  },
 
   resetBuilder: () =>
     set({
@@ -242,6 +276,11 @@ export const useArchitectureBuilderStore = create<ArchitectureBuilderState>((set
       pendingSaveRequested: false,
       past: [],
       future: [],
+      validationResult: null,
+      isValidating: false,
+      isValidationDrawerOpen: false,
+      highlightedValidationNodeIds: [],
+      highlightedValidationEdgeIds: [],
     }),
 
   setViewport: (viewport) => set({ viewport }),
@@ -668,5 +707,49 @@ export const useArchitectureBuilderStore = create<ArchitectureBuilderState>((set
       set({ saveStatus: 'error', saveError: message });
       return false;
     }
+  },
+
+  setValidationDrawerOpen: (open) => {
+    set({ isValidationDrawerOpen: open });
+  },
+
+  runValidation: async (architectureId) => {
+    const state = get();
+    const targetId = architectureId || state.architecture?.id || 'current';
+    set({ isValidating: true });
+
+    // 1. Run immediate deterministic client evaluation
+    const clientResult = runClientValidation(targetId, state.nodes, state.edges);
+    set({ validationResult: clientResult });
+
+    // 2. If architecture is persisted, also synchronize with backend validation API
+    if (state.architecture?.id && !state.isDirty) {
+      try {
+        const backendResult = await validateArchitectureApi(state.architecture.id);
+        set({ validationResult: backendResult });
+      } catch (err) {
+        // Fall back gracefully to client validation result
+        console.warn('Backend validation sync fallback:', err);
+      }
+    }
+
+    set({ isValidating: false });
+  },
+
+  highlightFinding: (finding) => {
+    set({
+      highlightedValidationNodeIds: finding.affectedNodeIds,
+      highlightedValidationEdgeIds: finding.affectedEdgeIds || [],
+      // Also select first affected node if available
+      selectedNodeId: finding.affectedNodeIds[0] || null,
+      selectedEdgeId: null,
+    });
+  },
+
+  clearValidationHighlights: () => {
+    set({
+      highlightedValidationNodeIds: [],
+      highlightedValidationEdgeIds: [],
+    });
   },
 }));

@@ -10,6 +10,7 @@ import { AwsResourceLibrarySidebar } from '../components/AwsResourceLibrarySideb
 import { BuilderStatusBar } from '../components/BuilderStatusBar';
 import { BuilderTopToolbar } from '../components/BuilderTopToolbar';
 import { NodeInspectorSidebar } from '../components/NodeInspectorSidebar';
+import { ValidationDashboardDrawer } from '@/features/validation/components/ValidationDashboardDrawer';
 import { getArchitectureById } from '../services/architectureService';
 import type {
   ArchitectureFlowEdge,
@@ -28,6 +29,8 @@ export function ArchitectureBuilderPage() {
   const isDirty = useArchitectureBuilderStore((s) => s.isDirty);
   const isSavingInFlight = useArchitectureBuilderStore((s) => s.isSavingInFlight);
   const architecture = useArchitectureBuilderStore((s) => s.architecture);
+  const isValidationDrawerOpen = useArchitectureBuilderStore((s) => s.isValidationDrawerOpen);
+  const setValidationDrawerOpen = useArchitectureBuilderStore((s) => s.setValidationDrawerOpen);
 
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -158,6 +161,11 @@ export function ArchitectureBuilderPage() {
           onToggleCollapse={() => setInspectorCollapsed((prev) => !prev)}
         />
       </div>
+
+      <ValidationDashboardDrawer
+        isOpen={isValidationDrawerOpen}
+        onClose={() => setValidationDrawerOpen(false)}
+      />
 
       <BuilderStatusBar />
     </div>

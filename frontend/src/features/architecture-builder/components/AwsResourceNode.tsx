@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { AwsServiceIcon } from '@/features/aws-services/components/AwsServiceIcon';
+import { useArchitectureBuilderStore } from '@/store/useArchitectureBuilderStore';
 import { cn } from '@/utils/cn';
 import type { ArchitectureFlowNode } from '../types/architecture.types';
 import { getCategoryAccent } from '../utils/awsNodeRegistry';
@@ -9,9 +10,13 @@ const HANDLE_BASE_CLASS =
   '!h-2.5 !w-2.5 !rounded-full !border-2 !border-surface !bg-slate-500 transition-all duration-150 hover:!scale-125 hover:!bg-sky-400';
 
 export const AwsResourceNode = memo(function AwsResourceNode({
+  id,
   data,
   selected,
 }: NodeProps<ArchitectureFlowNode>) {
+  const isValidationHighlighted = useArchitectureBuilderStore((s) =>
+    s.highlightedValidationNodeIds.includes(id),
+  );
   const accent = getCategoryAccent(data.categorySlug);
   const showResourceSubtitle =
     Boolean(data.resourceName) && data.resourceName !== data.label;
@@ -20,9 +25,11 @@ export const AwsResourceNode = memo(function AwsResourceNode({
     <div
       className={cn(
         'group relative w-64 overflow-hidden rounded-xl border bg-surface text-slate-100 shadow-lg shadow-black/30 transition-all duration-150',
-        selected
-          ? 'border-sky-400 ring-2 ring-sky-400/70'
-          : 'border-border-subtle hover:border-border-strong',
+        isValidationHighlighted
+          ? 'border-rose-500 ring-4 ring-rose-500/60 shadow-rose-950/50'
+          : selected
+            ? 'border-sky-400 ring-2 ring-sky-400/70'
+            : 'border-border-subtle hover:border-border-strong',
       )}
     >
       {/* Category-aware top accent bar */}

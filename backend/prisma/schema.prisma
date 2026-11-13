@@ -68,9 +68,69 @@ model Architecture {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   user          User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  costAssumptions CostAssumptions?
+  costEstimationRuns CostEstimationRun[]
 
   @@index([userId, updatedAt])
   @@map("architectures")
+}
+
+model PricingCache {
+  id           String   @id @default(cuid())
+  serviceCode  String
+  region       String   @default("us-east-1")
+  resourceType String
+  dimension    String
+  unit         String
+  pricePerUnit Float
+  currency     String   @default("USD")
+  priceType    String   @default("OnDemand")
+  effectiveDate DateTime?
+  retrievedAt  DateTime @default(now())
+  source       String   @default("AWS Price List API")
+  metadata     Json?
+
+  @@unique([serviceCode, region, resourceType, dimension, priceType])
+  @@index([serviceCode, region])
+  @@index([resourceType, region])
+  @@index([retrievedAt])
+  @@map("pricing_cache")
+}
+
+model CostAssumptions {
+  id                       String       @id @default(cuid())
+  architectureId           String       @unique
+  preset                   String       @default("Small Production")
+  monthlyOperatingHours    Int          @default(730)
+  averageCpuUtilization    Int          @default(60)
+  monthlyDataTransferOutGb Float        @default(100.0)
+  monthlyS3StorageGb       Float        @default(50.0)
+  monthlyS3Requests        Int          @default(50000)
+  monthlyNatTrafficGb      Float        @default(50.0)
+  monthlyLambdaInvocations Int          @default(1000000)
+  averageLambdaDurationMs  Int          @default(200)
+  createdAt                DateTime     @default(now())
+  updatedAt                DateTime     @updatedAt
+  architecture             Architecture @relation(fields: [architectureId], references: [id], onDelete: Cascade)
+
+  @@map("cost_assumptions")
+}
+
+model CostEstimationRun {
+  id                      String       @id @default(cuid())
+  architectureId          String
+  currency                String       @default("USD")
+  totalEstimatedMonthly   Float
+  totalEstimatedHourly    Float
+  serviceBreakdown        Json
+  resourceItems           Json
+  potentialMonthlySavings Float        @default(0.0)
+  recommendations         Json         @default("[]")
+  calculatedAt            DateTime     @default(now())
+  architecture            Architecture @relation(fields: [architectureId], references: [id], onDelete: Cascade)
+
+  @@index([architectureId, calculatedAt])
+  @@map("cost_estimation_runs")
 }
 
 model AwsCategory {

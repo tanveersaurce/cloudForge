@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   ArrowLeft,
   Check,
+  DollarSign,
   Download,
   Loader2,
   Maximize2,
@@ -11,6 +12,9 @@ import {
   Pencil,
   Redo2,
   Save,
+  Shield,
+  ShieldAlert,
+  ShieldCheck,
   Undo2,
   ZoomIn,
   ZoomOut,
@@ -76,6 +80,12 @@ export function BuilderTopToolbar({
   const isSavingInFlight = useArchitectureBuilderStore((s) => s.isSavingInFlight);
   const pastCount = useArchitectureBuilderStore((s) => s.past.length);
   const futureCount = useArchitectureBuilderStore((s) => s.future.length);
+
+  const validationResult = useArchitectureBuilderStore((s) => s.validationResult);
+  const isValidationDrawerOpen = useArchitectureBuilderStore((s) => s.isValidationDrawerOpen);
+  const setValidationDrawerOpen = useArchitectureBuilderStore((s) => s.setValidationDrawerOpen);
+  const runValidation = useArchitectureBuilderStore((s) => s.runValidation);
+  const isValidating = useArchitectureBuilderStore((s) => s.isValidating);
 
   const undo = useArchitectureBuilderStore((s) => s.undo);
   const redo = useArchitectureBuilderStore((s) => s.redo);
@@ -319,6 +329,58 @@ export function BuilderTopToolbar({
             </>
           )}
         </button>
+
+        {/* Validation Button */}
+        <button
+          type="button"
+          onClick={() => {
+            if (!isValidationDrawerOpen) {
+              void runValidation();
+              setValidationDrawerOpen(true);
+            } else {
+              setValidationDrawerOpen(false);
+            }
+          }}
+          disabled={!architecture}
+          title="Validate AWS Architecture (Well-Architected Compliance)"
+          className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-semibold transition ${
+            isValidationDrawerOpen
+              ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
+              : validationResult?.summary.status === 'invalid'
+                ? 'border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20'
+                : validationResult?.summary.status === 'valid'
+                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20'
+                  : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
+          }`}
+        >
+          {isValidating ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-indigo-400" />
+          ) : validationResult?.summary.status === 'invalid' ? (
+            <ShieldAlert className="h-3.5 w-3.5 text-rose-400" />
+          ) : validationResult?.summary.status === 'valid' ? (
+            <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+          ) : (
+            <Shield className="h-3.5 w-3.5 text-indigo-400" />
+          )}
+          <span className="hidden sm:inline">Validate</span>
+          {validationResult && validationResult.summary.totalFindings > 0 && (
+            <span className="ml-0.5 rounded-full bg-rose-500/30 px-1.5 py-0.2 text-[10px] font-bold text-rose-200">
+              {validationResult.summary.totalFindings}
+            </span>
+          )}
+        </button>
+
+        {/* Cost Explorer Button */}
+        {architecture && (
+          <Link
+            to={`/cost-explorer/${architecture.id}`}
+            title="AWS Cost Explorer & Intelligent Optimization"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-800 bg-slate-900 px-2.5 text-xs font-semibold text-slate-300 hover:border-slate-700 hover:bg-slate-800 hover:text-white transition"
+          >
+            <DollarSign className="h-3.5 w-3.5 text-emerald-400" />
+            <span className="hidden sm:inline">Cost Explorer</span>
+          </Link>
+        )}
 
         {/* Manual Save */}
         <button
