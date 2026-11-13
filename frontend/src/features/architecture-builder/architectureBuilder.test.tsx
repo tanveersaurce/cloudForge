@@ -684,3 +684,150 @@ describe('Phase 05 AWS Compatibility & Graph Engine', () => {
     expect(detected).toHaveLength(1);
   });
 });
+
+describe('Phase 06 Dynamic AWS Configuration Engine', () => {
+  it('retrieves verified AWS schemas, initializes defaults, and evaluates conditional visibility', async () => {
+    const { getResourceConfigurationSchema, initializeDefaultConfiguration, isFieldVisible } =
+      await import('./utils/configurationSchemaRegistry');
+
+    const ec2 = getResourceConfigurationSchema('aws_instance');
+    expect(ec2.resourceType).toBe('aws_instance');
+    expect(ec2.sections.length).toBeGreaterThanOrEqual(4);
+
+    const rds = getResourceConfigurationSchema('aws_db_instance');
+    expect(rds.resourceType).toBe('aws_db_instance');
+    const dbEngineField = rds.sections
+      .flatMap((s) => s.fields)
+      .find((f) => f.key === 'engine');
+    expect(dbEngineField?.defaultValue).toBe('postgres');
+
+    const s3 = getResourceConfigurationSchema('aws_s3_bucket');
+    const kmsField = s3.sections
+      .flatMap((s) => s.fields)
+      .find((f) => f.key === 'kms_master_key_id');
+    expect(kmsField).toBeDefined();
+
+    // Conditional visibility: KMS key is hidden when SSE is AES256, visible when aws:kms
+    expect(isFieldVisible(kmsField!, { sse_algorithm: 'AES256' })).toBe(false);
+    expect(isFieldVisible(kmsField!, { sse_algorithm: 'aws:kms' })).toBe(true);
+
+    // Default initialization preserves existing user fields while filling schema defaults
+    const defaults = initializeDefaultConfiguration(ec2, { custom_tag: 'user-defined' });
+    expect(defaults.instance_type).toBe('t3.micro');
+    expect(defaults.root_volume_size).toBe(20);
+    expect(defaults.custom_tag).toBe('user-defined');
+  });
+
+  it('validates fields, CIDRs, numeric ranges, and canvas resource references', async () => {
+    const { validateNodeConfiguration, isValidIpv4Cidr } = await import(
+      './utils/configurationValidation'
+    );
+    const { getResourceConfigurationSchema } = await import(
+      './utils/configurationSchemaRegistry'
+    );
+
+    expect(isValidIpv4Cidr('10.0.0.0/16')).toBe(true);
+    expect(isValidIpv4Cidr('192.168.1.0/24')).toBe(true);
+    expect(isValidIpv4Cidr('999.0.0.0/16')).toBe(false);
+    expect(isValidIpv4Cidr('not-a-cidr')).toBe(false);
+
+    const vpcSchema = getResourceConfigurationSchema('aws_vpc');
+    const vpcNode = makeFlowNode('vpc-node-1', 'aws_vpc', 'Core VPC');
+
+    // Invalid CIDR produces error
+    const invalidCidrResult = validateNodeConfiguration(
+      vpcSchema,
+      { vpc_name: 'prod-vpc', cidr_block: 'invalid-cidr' },
+      [vpcNode],
+    );
+    expect(invalidCidrResult.isValid).toBe(false);
+    expect(invalidCidrResult.errors.some((e) => e.fieldKey === 'cidr_block')).toBe(true);
+
+    // EC2 referencing missing VPC node produces error
+    const ec2Schema = getResourceConfigurationSchema('aws_instance');
+    const ec2MissingRefResult = validateNodeConfiguration(
+      ec2Schema,
+      {
+        instance_name: 'web-01',
+        ami: 'ami-0c55b159cbfafe1f0',
+        instance_type: 't3.micro',
+        root_volume_size: 20,
+        vpc_id: 'missing-vpc-id',
+      },
+      [vpcNode],
+    );
+    expect(ec2MissingRefResult.errors.some((e) => e.fieldKey === 'vpc_id')).toBe(true);
+
+    // EC2 referencing existing valid VPC node succeeds
+    const ec2ValidResult = validateNodeConfiguration(
+      ec2Schema,
+      {
+        instance_name: 'web-01',
+        ami: 'ami-0c55b159cbfafe1f0',
+        instance_type: 't3.micro',
+        root_volume_size: 20,
+        vpc_id: 'vpc-node-1',
+      },
+      [vpcNode],
+    );
+    expect(ec2ValidResult.isValid).toBe(true);
+  });
+
+  it('renders dynamic configuration in inspector, updates values, and saves to node metadata', async () => {
+    const user = userEvent.setup();
+
+    const initialArch: ArchitectureDetailDto = {
+      ...structuredClone(initialDetail),
+      nodes: [
+        {
+          id: 'node-ec2-test',
+          type: 'awsResource',
+          position: { x: 100, y: 100 },
+          data: {
+            serviceId: 'svc-ec2',
+            serviceSlug: 'amazon-ec2',
+            serviceName: 'Amazon EC2',
+            categorySlug: 'compute',
+            categoryName: 'Compute',
+            iconKey: 'ec2',
+            resourceName: 'EC2 Instance',
+            resourceType: 'aws_instance',
+            label: 'Web Server',
+            description: 'Application server instance',
+            metadata: {},
+          },
+        },
+      ],
+      edges: [],
+    };
+
+    getArchitectureByIdMock.mockResolvedValueOnce(initialArch);
+    renderAppAt('/architecture-builder/arch-1');
+
+    expect(await screen.findByText('Web Server')).toBeInTheDocument();
+
+    // Select the EC2 node
+    useArchitectureBuilderStore.getState().selectNode('node-ec2-test');
+
+    // Dynamic AWS Configuration section should appear in inspector
+    expect(await screen.findByText(/AWS Resource Configuration/i)).toBeInTheDocument();
+    expect(screen.getByText(/General Information/i)).toBeInTheDocument();
+    expect(screen.getByText(/Hardware & Compute Settings/i)).toBeInTheDocument();
+
+    // Edit the instance name tag field
+    const instanceNameInput = screen.getByLabelText(/Instance Name Tag/i);
+    await user.clear(instanceNameInput);
+    await user.type(instanceNameInput, 'production-api-01');
+
+    // Click Save Configuration
+    const saveConfigBtn = screen.getByRole('button', { name: /Save Configuration/i });
+    expect(saveConfigBtn).toBeEnabled();
+    await user.click(saveConfigBtn);
+
+    // Check node metadata in store
+    await waitFor(() => {
+      const node = useArchitectureBuilderStore.getState().nodes.find((n) => n.id === 'node-ec2-test');
+      expect(node?.data.metadata.instance_name).toBe('production-api-01');
+    });
+  });
+});

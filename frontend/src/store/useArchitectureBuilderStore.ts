@@ -156,6 +156,7 @@ interface ArchitectureBuilderState {
     nodeId: string,
     patch: Partial<Pick<AwsResourceNodeData, 'label' | 'description'>>,
   ) => void;
+  updateNodeConfiguration: (nodeId: string, metadata: Record<string, unknown>) => void;
   updateEdgeMetadata: (edgeId: string, patch: Partial<AwsResourceEdgeData>) => void;
   reverseEdgeDirection: (edgeId: string) => void;
   duplicateNode: (nodeId: string) => void;
@@ -407,6 +408,33 @@ export const useArchitectureBuilderStore = create<ArchitectureBuilderState>((set
     );
 
     set({
+      nodes: nextNodes,
+      isDirty: true,
+      saveStatus: 'unsaved',
+      saveError: null,
+    });
+  },
+
+  updateNodeConfiguration: (nodeId, metadata) => {
+    const state = get();
+    const nextNodes = state.nodes.map((node) =>
+      node.id === nodeId
+        ? {
+            ...node,
+            data: {
+              ...node.data,
+              metadata: {
+                ...(node.data.metadata ?? {}),
+                ...metadata,
+              },
+            },
+          }
+        : node,
+    );
+
+    set({
+      past: pushHistory(state.past, state.nodes, state.edges),
+      future: [],
       nodes: nextNodes,
       isDirty: true,
       saveStatus: 'unsaved',

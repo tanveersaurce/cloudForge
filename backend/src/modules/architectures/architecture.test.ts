@@ -658,4 +658,102 @@ describe('Architecture CRUD, Canvas Persistence, Validation & Ownership APIs', (
     expect(invalidPortRes.status).toBe(400);
     expect(invalidPortRes.body.success).toBe(false);
   });
+
+  it('persists Phase 06 dynamic node configuration metadata (instance types, CIDRs, IAM roles, storage) and reloads cleanly', async () => {
+    const cookie = await registerAndGetCookie('Aarav Sharma', 'aarav@cloudforge.dev');
+
+    const createRes = await request(app)
+      .post('/api/architectures')
+      .set('Cookie', cookie)
+      .send({ name: 'Phase 06 Configuration Arch' });
+    const archId = createRes.body.data.id as string;
+
+    const vpcNode = {
+      id: 'node-vpc-100',
+      type: 'awsResource' as const,
+      position: { x: 50, y: 50 },
+      data: {
+        serviceId: 'svc-vpc',
+        serviceSlug: 'amazon-vpc',
+        serviceName: 'Amazon VPC',
+        categorySlug: 'networking-content-delivery',
+        categoryName: 'Networking & Content Delivery',
+        iconKey: 'vpc',
+        resourceName: 'VPC',
+        resourceType: 'aws_vpc',
+        label: 'Production VPC',
+        description: 'Core VPC container',
+        metadata: {
+          vpc_name: 'prod-core-vpc',
+          cidr_block: '10.100.0.0/16',
+          enable_dns_support: true,
+          enable_dns_hostnames: true,
+          instance_tenancy: 'default',
+        },
+      },
+    };
+
+    const ec2Node = {
+      id: 'node-ec2-200',
+      type: 'awsResource' as const,
+      position: { x: 250, y: 150 },
+      data: {
+        serviceId: 'svc-ec2',
+        serviceSlug: 'amazon-ec2',
+        serviceName: 'Amazon EC2',
+        categorySlug: 'compute',
+        categoryName: 'Compute',
+        iconKey: 'ec2',
+        resourceName: 'EC2 Instance',
+        resourceType: 'aws_instance',
+        label: 'App Server',
+        description: 'Primary web server node',
+        metadata: {
+          instance_name: 'prod-web-01',
+          ami: 'ami-0c55b159cbfafe1f0',
+          instance_type: 't3.medium',
+          vpc_id: 'node-vpc-100',
+          monitoring: true,
+          root_volume_type: 'gp3',
+          root_volume_size: 40,
+          root_encrypted: true,
+        },
+      },
+    };
+
+    const saveRes = await request(app)
+      .put(`/api/architectures/${archId}/canvas`)
+      .set('Cookie', cookie)
+      .send({
+        nodes: [vpcNode, ec2Node],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      });
+
+    expect(saveRes.status).toBe(200);
+    expect(saveRes.body.data.nodes[0].data.metadata).toMatchObject({
+      vpc_name: 'prod-core-vpc',
+      cidr_block: '10.100.0.0/16',
+      enable_dns_support: true,
+    });
+    expect(saveRes.body.data.nodes[1].data.metadata).toMatchObject({
+      instance_name: 'prod-web-01',
+      instance_type: 't3.medium',
+      vpc_id: 'node-vpc-100',
+      root_volume_size: 40,
+    });
+
+    // Reload from GET /api/architectures/:id
+    const reloadRes = await request(app)
+      .get(`/api/architectures/${archId}`)
+      .set('Cookie', cookie);
+
+    expect(reloadRes.status).toBe(200);
+    const reloadedVpc = reloadRes.body.data.nodes.find((n: { id: string }) => n.id === 'node-vpc-100');
+    const reloadedEc2 = reloadRes.body.data.nodes.find((n: { id: string }) => n.id === 'node-ec2-200');
+
+    expect(reloadedVpc.data.metadata.cidr_block).toBe('10.100.0.0/16');
+    expect(reloadedEc2.data.metadata.instance_type).toBe('t3.medium');
+    expect(reloadedEc2.data.metadata.root_volume_size).toBe(40);
+  });
 });
