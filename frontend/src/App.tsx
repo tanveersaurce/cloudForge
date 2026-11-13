@@ -8,6 +8,7 @@ import { ProfilePage } from '@/features/auth/pages/ProfilePage';
 import { RegisterPage } from '@/features/auth/pages/RegisterPage';
 import { ArchitectureBuilderPage } from '@/features/architecture-builder/pages/ArchitectureBuilderPage';
 import { ArchitecturesListPage } from '@/features/architecture-builder/pages/ArchitecturesListPage';
+import { CostExplorerPage } from '@/features/cost-explorer/pages/CostExplorerPage';
 import { AwsServiceDetailPage } from '@/features/aws-services/pages/AwsServiceDetailPage';
 import { AwsServicesExplorerPage } from '@/features/aws-services/pages/AwsServicesExplorerPage';
 import { DashboardPage } from '@/features/dashboard/pages/DashboardPage';
@@ -27,6 +28,10 @@ export function AppRoutes() {
         <Route
           path="/architecture-builder/:architectureId"
           element={<ArchitectureBuilderPage />}
+        />
+        <Route
+          path="/cost-explorer/:architectureId"
+          element={<CostExplorerPage />}
         />
         <Route element={<DashboardLayout />}>
           <Route index element={<DashboardPage />} />

@@ -11,6 +11,8 @@ import { authRouter } from './modules/auth/auth.routes.js';
 import { awsRouter } from './modules/aws/aws.routes.js';
 import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
 import { healthRouter } from './modules/health/health.routes.js';
+import { pricingRouter } from './modules/pricing/pricing.routes.js';
+import { validationRouter } from './modules/validation/validation.routes.js';
 
 export function createApp() {
   const app = express();
@@ -53,6 +55,8 @@ export function createApp() {
   app.use('/api/aws', awsRouter);
   app.use('/api/dashboard', dashboardRouter);
   app.use('/api/architectures', architectureRouter);
+  app.use('/api/validation', validationRouter);
+  app.use('/api/pricing', pricingRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
