@@ -1,4 +1,4 @@
-import { Globe, Layers } from 'lucide-react';
+import { Globe, Layers, ArrowRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Badge } from '@/components/Badge';
 import { Button } from '@/components/Button';
@@ -40,13 +40,15 @@ export function ArchitecturePreviewModal() {
               Close
             </Button>
             <Button
-              variant="secondary"
+              variant="primary"
               onClick={() => {
+                const targetId = architecture.id;
                 setSelectedArchitecture(null);
-                navigate('/builder');
+                navigate(`/architecture-builder/${targetId}`);
               }}
             >
-              Architecture Builder (Phase 03)
+              <span>Open in Canvas</span>
+              <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
             </Button>
           </div>
         </div>

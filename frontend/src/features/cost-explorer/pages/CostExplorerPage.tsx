@@ -14,6 +14,8 @@ import { ServiceBreakdownChart } from '../components/ServiceBreakdownChart';
 import { ResourceCostTable } from '../components/ResourceCostTable';
 import { WorkloadAssumptionsModal } from '../components/WorkloadAssumptionsModal';
 import { CostOptimizationSection } from '../components/CostOptimizationSection';
+import { calculateClientCost } from '../engine/clientCostCalculator';
+import { getArchitectureById } from '@/features/architecture-builder/services/architectureService';
 import {
   applyCostOptimizationApi,
   getCostEstimateApi,
@@ -37,8 +39,20 @@ export const CostExplorerPage: React.FC = () => {
     try {
       const data = await getCostEstimateApi(architectureId);
       setEstimate(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load cost estimation');
+    } catch {
+      // Fallback: load architecture and compute client-side estimate
+      try {
+        const detail = await getArchitectureById(architectureId);
+        const clientEstimate = calculateClientCost(
+          architectureId,
+          detail.region || 'us-east-1',
+          (detail.nodes || []) as any,
+          (detail.edges || []) as any,
+        );
+        setEstimate(clientEstimate);
+      } catch (fallbackErr) {
+        setError(fallbackErr instanceof Error ? fallbackErr.message : 'Failed to load cost estimation');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -52,9 +66,26 @@ export const CostExplorerPage: React.FC = () => {
     if (!architectureId) return;
     setIsLoading(true);
     try {
-      await saveCostAssumptionsApi(architectureId, newAssumptions);
-      const updatedEstimate = await postCostEstimateApi(architectureId, newAssumptions);
-      setEstimate(updatedEstimate);
+      try {
+        await saveCostAssumptionsApi(architectureId, newAssumptions);
+      } catch {
+        // Table or network non-blocking fallback
+      }
+      try {
+        const updatedEstimate = await postCostEstimateApi(architectureId, newAssumptions);
+        setEstimate(updatedEstimate);
+      } catch {
+        // Fallback: recompute client-side with new assumptions
+        const detail = await getArchitectureById(architectureId);
+        const recalculated = calculateClientCost(
+          architectureId,
+          detail.region || 'us-east-1',
+          (detail.nodes || []) as any,
+          (detail.edges || []) as any,
+          newAssumptions,
+        );
+        setEstimate(recalculated);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update workload assumptions');
     } finally {

@@ -76,7 +76,7 @@ export function QuickStartTemplatesSection({ templates }: QuickStartTemplatesSec
                 <div className="mt-4 flex items-center justify-between border-t border-border-subtle/70 pt-3 text-[11px] text-slate-400">
                   <span>{template.serviceCount} AWS services</span>
                   <span className="inline-flex items-center gap-1 font-medium text-sky-400">
-                    Preview
+                    Use Template
                     <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
                   </span>
                 </div>

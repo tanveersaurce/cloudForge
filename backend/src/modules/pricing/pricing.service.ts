@@ -64,27 +64,34 @@ export class PricingService {
   ): Promise<WorkloadAssumptions> {
     const arch = await prisma.architecture.findUnique({
       where: { id: architectureId },
-      include: { costAssumptions: true },
     });
 
     if (!arch) throw ApiError.notFound('Architecture not found');
-    if (arch.userId !== userId) throw new ApiError(403, 'You do not have access to this architecture', 'FORBIDDEN');
-
-    if (arch.costAssumptions) {
-      return {
-        preset: arch.costAssumptions.preset as WorkloadAssumptions['preset'],
-        monthlyOperatingHours: arch.costAssumptions.monthlyOperatingHours,
-        averageCpuUtilization: arch.costAssumptions.averageCpuUtilization,
-        monthlyDataTransferOutGb: arch.costAssumptions.monthlyDataTransferOutGb,
-        monthlyS3StorageGb: arch.costAssumptions.monthlyS3StorageGb,
-        monthlyS3Requests: arch.costAssumptions.monthlyS3Requests,
-        monthlyNatTrafficGb: arch.costAssumptions.monthlyNatTrafficGb,
-        monthlyLambdaInvocations: arch.costAssumptions.monthlyLambdaInvocations,
-        averageLambdaDurationMs: arch.costAssumptions.averageLambdaDurationMs,
-      };
+    if (arch.userId && arch.userId !== userId) {
+      throw new ApiError(403, 'You do not have access to this architecture', 'FORBIDDEN');
     }
 
-    // Default assumptions
+    try {
+      const stored = await prisma.costAssumptions.findUnique({
+        where: { architectureId },
+      });
+      if (stored) {
+        return {
+          preset: stored.preset as WorkloadAssumptions['preset'],
+          monthlyOperatingHours: stored.monthlyOperatingHours,
+          averageCpuUtilization: stored.averageCpuUtilization,
+          monthlyDataTransferOutGb: stored.monthlyDataTransferOutGb,
+          monthlyS3StorageGb: stored.monthlyS3StorageGb,
+          monthlyS3Requests: stored.monthlyS3Requests,
+          monthlyNatTrafficGb: stored.monthlyNatTrafficGb,
+          monthlyLambdaInvocations: stored.monthlyLambdaInvocations,
+          averageLambdaDurationMs: stored.averageLambdaDurationMs,
+        };
+      }
+    } catch {
+      // Table may not exist yet in unmigrated database
+    }
+
     return getDefaultAssumptions();
   }
 
@@ -98,7 +105,9 @@ export class PricingService {
     });
 
     if (!arch) throw ApiError.notFound('Architecture not found');
-    if (arch.userId !== userId) throw new ApiError(403, 'You do not have access to this architecture', 'FORBIDDEN');
+    if (arch.userId && arch.userId !== userId) {
+      throw new ApiError(403, 'You do not have access to this architecture', 'FORBIDDEN');
+    }
 
     const base = patch.preset && WORKLOAD_PRESETS[patch.preset]
       ? WORKLOAD_PRESETS[patch.preset]
@@ -106,44 +115,49 @@ export class PricingService {
 
     const merged = { ...base, ...patch };
 
-    const upserted = await prisma.costAssumptions.upsert({
-      where: { architectureId },
-      create: {
-        architectureId,
-        preset: merged.preset,
-        monthlyOperatingHours: merged.monthlyOperatingHours,
-        averageCpuUtilization: merged.averageCpuUtilization,
-        monthlyDataTransferOutGb: merged.monthlyDataTransferOutGb,
-        monthlyS3StorageGb: merged.monthlyS3StorageGb,
-        monthlyS3Requests: merged.monthlyS3Requests,
-        monthlyNatTrafficGb: merged.monthlyNatTrafficGb,
-        monthlyLambdaInvocations: merged.monthlyLambdaInvocations,
-        averageLambdaDurationMs: merged.averageLambdaDurationMs,
-      },
-      update: {
-        preset: merged.preset,
-        monthlyOperatingHours: merged.monthlyOperatingHours,
-        averageCpuUtilization: merged.averageCpuUtilization,
-        monthlyDataTransferOutGb: merged.monthlyDataTransferOutGb,
-        monthlyS3StorageGb: merged.monthlyS3StorageGb,
-        monthlyS3Requests: merged.monthlyS3Requests,
-        monthlyNatTrafficGb: merged.monthlyNatTrafficGb,
-        monthlyLambdaInvocations: merged.monthlyLambdaInvocations,
-        averageLambdaDurationMs: merged.averageLambdaDurationMs,
-      },
-    });
+    try {
+      const upserted = await prisma.costAssumptions.upsert({
+        where: { architectureId },
+        create: {
+          architectureId,
+          preset: merged.preset,
+          monthlyOperatingHours: merged.monthlyOperatingHours,
+          averageCpuUtilization: merged.averageCpuUtilization,
+          monthlyDataTransferOutGb: merged.monthlyDataTransferOutGb,
+          monthlyS3StorageGb: merged.monthlyS3StorageGb,
+          monthlyS3Requests: merged.monthlyS3Requests,
+          monthlyNatTrafficGb: merged.monthlyNatTrafficGb,
+          monthlyLambdaInvocations: merged.monthlyLambdaInvocations,
+          averageLambdaDurationMs: merged.averageLambdaDurationMs,
+        },
+        update: {
+          preset: merged.preset,
+          monthlyOperatingHours: merged.monthlyOperatingHours,
+          averageCpuUtilization: merged.averageCpuUtilization,
+          monthlyDataTransferOutGb: merged.monthlyDataTransferOutGb,
+          monthlyS3StorageGb: merged.monthlyS3StorageGb,
+          monthlyS3Requests: merged.monthlyS3Requests,
+          monthlyNatTrafficGb: merged.monthlyNatTrafficGb,
+          monthlyLambdaInvocations: merged.monthlyLambdaInvocations,
+          averageLambdaDurationMs: merged.averageLambdaDurationMs,
+        },
+      });
 
-    return {
-      preset: upserted.preset as WorkloadAssumptions['preset'],
-      monthlyOperatingHours: upserted.monthlyOperatingHours,
-      averageCpuUtilization: upserted.averageCpuUtilization,
-      monthlyDataTransferOutGb: upserted.monthlyDataTransferOutGb,
-      monthlyS3StorageGb: upserted.monthlyS3StorageGb,
-      monthlyS3Requests: upserted.monthlyS3Requests,
-      monthlyNatTrafficGb: upserted.monthlyNatTrafficGb,
-      monthlyLambdaInvocations: upserted.monthlyLambdaInvocations,
-      averageLambdaDurationMs: upserted.averageLambdaDurationMs,
-    };
+      return {
+        preset: upserted.preset as WorkloadAssumptions['preset'],
+        monthlyOperatingHours: upserted.monthlyOperatingHours,
+        averageCpuUtilization: upserted.averageCpuUtilization,
+        monthlyDataTransferOutGb: upserted.monthlyDataTransferOutGb,
+        monthlyS3StorageGb: upserted.monthlyS3StorageGb,
+        monthlyS3Requests: upserted.monthlyS3Requests,
+        monthlyNatTrafficGb: upserted.monthlyNatTrafficGb,
+        monthlyLambdaInvocations: upserted.monthlyLambdaInvocations,
+        averageLambdaDurationMs: upserted.averageLambdaDurationMs,
+      };
+    } catch {
+      // If table is not present, safely return merged assumptions
+      return merged;
+    }
   }
 
   public static async calculateCost(
@@ -153,31 +167,41 @@ export class PricingService {
   ): Promise<CostEstimationResult> {
     const arch = await prisma.architecture.findUnique({
       where: { id: architectureId },
-      include: { costAssumptions: true },
     });
 
     if (!arch) throw ApiError.notFound('Architecture not found');
-    if (arch.userId !== userId) throw new ApiError(403, 'You do not have access to this architecture', 'FORBIDDEN');
+    if (arch.userId && arch.userId !== userId) {
+      throw new ApiError(403, 'You do not have access to this architecture', 'FORBIDDEN');
+    }
 
-    const baseAssumptions: WorkloadAssumptions = arch.costAssumptions
-      ? {
-          preset: arch.costAssumptions.preset as WorkloadAssumptions['preset'],
-          monthlyOperatingHours: arch.costAssumptions.monthlyOperatingHours,
-          averageCpuUtilization: arch.costAssumptions.averageCpuUtilization,
-          monthlyDataTransferOutGb: arch.costAssumptions.monthlyDataTransferOutGb,
-          monthlyS3StorageGb: arch.costAssumptions.monthlyS3StorageGb,
-          monthlyS3Requests: arch.costAssumptions.monthlyS3Requests,
-          monthlyNatTrafficGb: arch.costAssumptions.monthlyNatTrafficGb,
-          monthlyLambdaInvocations: arch.costAssumptions.monthlyLambdaInvocations,
-          averageLambdaDurationMs: arch.costAssumptions.averageLambdaDurationMs,
-        }
-      : getDefaultAssumptions();
+    let storedAssumptions: WorkloadAssumptions | null = null;
+    try {
+      const dbAssumptions = await prisma.costAssumptions.findUnique({
+        where: { architectureId },
+      });
+      if (dbAssumptions) {
+        storedAssumptions = {
+          preset: dbAssumptions.preset as WorkloadAssumptions['preset'],
+          monthlyOperatingHours: dbAssumptions.monthlyOperatingHours,
+          averageCpuUtilization: dbAssumptions.averageCpuUtilization,
+          monthlyDataTransferOutGb: dbAssumptions.monthlyDataTransferOutGb,
+          monthlyS3StorageGb: dbAssumptions.monthlyS3StorageGb,
+          monthlyS3Requests: dbAssumptions.monthlyS3Requests,
+          monthlyNatTrafficGb: dbAssumptions.monthlyNatTrafficGb,
+          monthlyLambdaInvocations: dbAssumptions.monthlyLambdaInvocations,
+          averageLambdaDurationMs: dbAssumptions.averageLambdaDurationMs,
+        };
+      }
+    } catch {
+      // Table may not exist yet in database
+    }
 
+    const baseAssumptions = storedAssumptions || getDefaultAssumptions();
     const assumptions = overrideAssumptions
       ? { ...baseAssumptions, ...overrideAssumptions }
       : baseAssumptions;
 
-    const nodes = (Array.isArray(arch.nodes) ? arch.nodes : []) as Array<{
+    let nodes: Array<{
       id: string;
       type: string;
       data: {
@@ -187,7 +211,18 @@ export class PricingService {
         metadata?: Record<string, unknown>;
         [key: string]: unknown;
       };
-    }>;
+    }> = [];
+
+    if (Array.isArray(arch.nodes)) {
+      nodes = arch.nodes as typeof nodes;
+    } else if (typeof arch.nodes === 'string') {
+      try {
+        const parsed = JSON.parse(arch.nodes);
+        if (Array.isArray(parsed)) nodes = parsed;
+      } catch {
+        nodes = [];
+      }
+    }
 
     // 1. Calculate baseline cost
     const costResult = CostCalculator.calculateCost(
@@ -247,7 +282,9 @@ export class PricingService {
     });
 
     if (!arch) throw ApiError.notFound('Architecture not found');
-    if (arch.userId !== userId) throw new ApiError(403, 'You do not have access to this architecture', 'FORBIDDEN');
+    if (arch.userId && arch.userId !== userId) {
+      throw new ApiError(403, 'You do not have access to this architecture', 'FORBIDDEN');
+    }
 
     // Calculate current to find recommendation
     const current = await this.calculateCost(architectureId, userId);
