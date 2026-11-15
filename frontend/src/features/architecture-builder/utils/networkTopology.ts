@@ -3,6 +3,7 @@ import type {
   ArchitectureFlowNode,
   AwsResourceNodeData,
 } from '../types/architecture.types';
+import { parseCidr } from '../../validation/utils/cidrUtils';
 
 export type SubnetClassification = 'public' | 'private' | 'isolated' | 'database' | 'unknown';
 
@@ -151,33 +152,83 @@ function verifyNatTargetId(targetId: string, allNodes: ArchitectureFlowNode[]): 
 }
 
 /**
- * Checks if a CIDR block belongs to a private/local IPv4 or IPv6 network range.
+ * Resolves the configured VPC CIDR for a subnet from:
+ * 1. Subnet metadata (vpcCidr, vpc_cidr, vpcCidrBlock)
+ * 2. Parent VPC node on canvas (via parentId)
+ * 3. Associated VPC node (via metadata.vpcId)
  */
-function isPrivateOrLocalCidr(cidr: string): boolean {
-  const trimmed = cidr.trim();
-  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(trimmed)) return true;
-  if (/^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(trimmed)) return true;
-  if (/^192\.168\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(trimmed)) return true;
-  if (/^fc00:/.test(trimmed) || /^fd00:/.test(trimmed)) return true;
-  return false;
+function resolveVpcCidr(
+  subnetData: AwsResourceNodeData,
+  subnetId?: string,
+  allNodes?: ArchitectureFlowNode[],
+): string | null {
+  const metadata = subnetData.metadata || {};
+  const directCidr = (metadata.vpcCidr || metadata.vpc_cidr || metadata.vpcCidrBlock) as string | undefined;
+  if (directCidr && typeof directCidr === 'string' && directCidr.trim()) {
+    return directCidr.trim();
+  }
+
+  if (!subnetId || !allNodes || allNodes.length === 0) return null;
+
+  const subnetNode = allNodes.find((n) => n.id === subnetId);
+  if (!subnetNode) return null;
+
+  if (subnetNode.parentId) {
+    const parentNode = allNodes.find((n) => n.id === subnetNode.parentId);
+    if (parentNode) {
+      const pMeta = parentNode.data.metadata || {};
+      const pCidr = (pMeta.cidr_block || pMeta.cidrBlock || pMeta.cidr || pMeta.vpcCidr) as string | undefined;
+      if (pCidr && typeof pCidr === 'string' && pCidr.trim()) {
+        return pCidr.trim();
+      }
+    }
+  }
+
+  const vpcId = (metadata.vpcId || metadata.vpc_id) as string | undefined;
+  if (vpcId && typeof vpcId === 'string') {
+    const vpcNode = findNodeById(vpcId, allNodes);
+    if (vpcNode) {
+      const vMeta = vpcNode.data.metadata || {};
+      const vCidr = (vMeta.cidr_block || vMeta.cidrBlock || vMeta.cidr || vMeta.vpcCidr) as string | undefined;
+      if (vCidr && typeof vCidr === 'string' && vCidr.trim()) {
+        return vCidr.trim();
+      }
+    }
+  }
+
+  return null;
 }
 
 /**
- * Validates if a route is a local VPC route (destination in VPC/private CIDR and target 'local').
+ * Validates if a route is an exact local VPC route:
+ * 1. Target must explicitly be 'local'.
+ * 2. Cannot be a default internet route (0.0.0.0/0, ::/0).
+ * 3. VPC CIDR must be available and valid IPv4 CIDR.
+ * 4. Route destination CIDR must be valid IPv4 CIDR.
+ * 5. Route destination CIDR must match the actual configured VPC CIDR exactly.
+ * RFC1918 private CIDRs that do not match the configured VPC CIDR are strictly rejected.
  */
-function isLocalVpcRoute(r: RouteEntry, vpcCidr?: string): boolean {
-  const dest = (r.destination || r.destinationCidr || r.destination_cidr_block || '').trim().toLowerCase();
+function isLocalVpcRoute(r: RouteEntry, vpcCidr?: string | null): boolean {
+  const dest = (r.destination || r.destinationCidr || r.destination_cidr_block || '').trim();
   const target = (r.target || r.gatewayId || r.natGatewayId || r.targetType || '').trim().toLowerCase();
 
   // Target must explicitly be 'local'
   if (target !== 'local') return false;
 
   // Cannot be default internet route
-  if (dest === '0.0.0.0/0' || dest === '::/0' || dest === 'default') return false;
+  if (dest === '0.0.0.0/0' || dest === '::/0' || dest.toLowerCase() === 'default') return false;
 
-  // Destination must match VPC CIDR if known, or be a private RFC 1918 CIDR block
-  if (vpcCidr && dest === vpcCidr.trim().toLowerCase()) return true;
-  return isPrivateOrLocalCidr(dest);
+  // Exact VPC CIDR verification required
+  if (!vpcCidr) return false;
+
+  const parsedVpc = parseCidr(vpcCidr);
+  const parsedDest = parseCidr(dest);
+  if (!parsedVpc || !parsedDest) return false;
+
+  return (
+    parsedVpc.ipNumber === parsedDest.ipNumber &&
+    parsedVpc.prefix === parsedDest.prefix
+  );
 }
 
 /**
@@ -279,8 +330,8 @@ export function classifySubnet(
   let allAssociatedRoutesLocal = false;
   let hasNonLocalRoute = false;
 
-  // Retrieve VPC CIDR if available from parent VPC or metadata
-  const vpcCidr = (metadata.vpcCidr || metadata.vpc_cidr || '') as string;
+  // Exact VPC CIDR resolution
+  const vpcCidr = resolveVpcCidr(subnetData, subnetId, allNodes);
 
   // Rule 1 & 2: Subnet must have an actual Route Table association
   const associatedRouteTables = getAssociatedRouteTables(
@@ -293,8 +344,15 @@ export function classifySubnet(
   if (associatedRouteTables.length > 0) {
     let totalRoutesChecked = 0;
     let localRoutesCount = 0;
+    const tableClassifications: ('public' | 'private' | 'isolated' | 'unknown')[] = [];
 
     for (const rtNode of associatedRouteTables) {
+      let tableHasIgw = false;
+      let tableHasNat = false;
+      let tableLocalCount = 0;
+      let tableRoutesCount = 0;
+      let tableNonLocal = false;
+
       // Inspect routes defined on the associated Route Table's metadata
       const rtMetadataRoutes: RouteEntry[] = Array.isArray(rtNode.data.metadata?.routes)
         ? (rtNode.data.metadata.routes as RouteEntry[])
@@ -304,6 +362,7 @@ export function classifySubnet(
 
       for (const r of rtMetadataRoutes) {
         totalRoutesChecked++;
+        tableRoutesCount++;
         const dest = (r.destination || r.destinationCidr || r.destination_cidr_block || '').trim();
         const target = (r.target || r.gatewayId || r.natGatewayId || '').trim();
         const isDefault = dest === '0.0.0.0/0' || dest === '::/0' || dest.toLowerCase() === 'default';
@@ -312,25 +371,29 @@ export function classifySubnet(
           // Rule 5: Exact target ID verification against allNodes
           if (verifyIgwTargetId(target, allNodes)) {
             hasIgwRoute = true;
+            tableHasIgw = true;
           }
           if (verifyNatTargetId(target, allNodes)) {
             hasNatRoute = true;
+            tableHasNat = true;
           }
         } else if (isLocalVpcRoute(r, vpcCidr)) {
           localRoutesCount++;
+          tableLocalCount++;
         } else {
-          // Non-local restricted route (e.g. 198.51.100.0/24 or target != 'local')
+          // Non-local restricted route or VPC CIDR mismatch
           hasNonLocalRoute = true;
+          tableNonLocal = true;
         }
       }
 
       // Inspect outgoing route edges from the associated Route Table
+      // Rule 3: Enforce Route Table -> Gateway direction strictly (edge.source === rtNode.id).
+      // Reject reversed edges (such as IGW -> Route Table or NAT -> Route Table).
       if (allEdges) {
-        const rtEdges = allEdges.filter(
-          (e) => e.source === rtNode.id || e.target === rtNode.id,
-        );
+        const outgoingRtEdges = allEdges.filter((e) => e.source === rtNode.id);
 
-        for (const edge of rtEdges) {
+        for (const edge of outgoingRtEdges) {
           const rel = edge.data?.relationshipType;
           // Must be an active route relationship
           if (!isRouteRelationship(rel)) continue;
@@ -339,30 +402,73 @@ export function classifySubnet(
           if (!isExplicitDefaultRoute(edge.data?.metadata, edge.data?.label)) {
             // Check if it's a restricted non-default route
             const dest = (edge.data?.metadata?.destinationCidr || edge.data?.metadata?.destination || '') as string;
-            if (dest && !isPrivateOrLocalCidr(dest)) {
+            if (dest && !isLocalVpcRoute({ destination: dest, target: 'local' }, vpcCidr)) {
               hasNonLocalRoute = true;
+              tableNonLocal = true;
             }
             continue;
           }
 
-          const targetId = edge.source === rtNode.id ? edge.target : edge.source;
-          const targetNode = allNodes.find((n) => n.id === targetId);
+          const targetNode = allNodes.find((n) => n.id === edge.target);
           if (!targetNode) continue;
 
           totalRoutesChecked++;
+          tableRoutesCount++;
           if (isInternetGatewayNode(targetNode)) {
             hasIgwRoute = true;
+            tableHasIgw = true;
           }
           if (isNatGatewayNode(targetNode)) {
             hasNatRoute = true;
+            tableHasNat = true;
           }
         }
+      }
+
+      // Record classification for this individual route table
+      if (tableHasIgw && tableHasNat) {
+        tableClassifications.push('unknown');
+      } else if (tableHasIgw) {
+        tableClassifications.push('public');
+      } else if (tableHasNat) {
+        tableClassifications.push('private');
+      } else if (tableLocalCount > 0 && tableLocalCount === tableRoutesCount && !tableNonLocal) {
+        tableClassifications.push('isolated');
+      } else {
+        tableClassifications.push('unknown');
+      }
+    }
+
+    // Rule 2: Detect multiple conflicting Route Table associations
+    if (associatedRouteTables.length > 1) {
+      const distinctActiveTypes = new Set(
+        tableClassifications.filter((t) => t !== 'unknown'),
+      );
+      if (distinctActiveTypes.size > 1 || (hasIgwRoute && hasNatRoute)) {
+        return {
+          classification: 'unknown',
+          confidence: 'unknown',
+          reason: 'Conflicting Route Table associations detected: subnet is associated with multiple route tables providing conflicting routing (IGW vs NAT Gateway).',
+          hasIgwRoute,
+          hasNatRoute,
+        };
       }
     }
 
     if (totalRoutesChecked > 0 && localRoutesCount === totalRoutesChecked && !hasNonLocalRoute) {
       allAssociatedRoutesLocal = true;
     }
+  }
+
+  // Detect conflict within single table or overall routes
+  if (hasIgwRoute && hasNatRoute) {
+    return {
+      classification: 'unknown',
+      confidence: 'unknown',
+      reason: 'Conflicting routes detected: subnet has multiple conflicting default routes (both Internet Gateway and NAT Gateway).',
+      hasIgwRoute: true,
+      hasNatRoute: true,
+    };
   }
 
   // --- Classification Determination ---
@@ -374,7 +480,7 @@ export function classifySubnet(
       confidence: 'verified',
       reason: 'Verified 3-hop route: Subnet -> Route Table -> Internet Gateway (0.0.0.0/0).',
       hasIgwRoute: true,
-      hasNatRoute,
+      hasNatRoute: false,
     };
   }
 
@@ -410,7 +516,7 @@ export function classifySubnet(
 
   // 4. Isolated Subnet:
   // Rule 4: Verify that all configured routes are local VPC routes and that NO internet egress route exists.
-  // If non-local routes exist or routes cannot be verified as local-only, return unknown.
+  // Rule 1: If VPC CIDR is unavailable or cannot be verified, return unknown instead of claiming verified isolation.
   if (hasNonLocalRoute) {
     return {
       classification: 'unknown',
@@ -426,13 +532,38 @@ export function classifySubnet(
     ((metadata.isolated === true || explicitSubnetType === 'isolated') && !hasNonLocalRoute);
 
   if (isExplicitlyIsolated && !hasIgwRoute && !hasNatRoute) {
-    return {
-      classification: 'isolated',
-      confidence: 'verified',
-      reason: 'Configured as isolated subnet with local-only VPC routing and no internet egress routes.',
-      hasIgwRoute: false,
-      hasNatRoute: false,
-    };
+    // Exact VPC CIDR verification: if unavailable or invalid, return unknown
+    if (!vpcCidr || !parseCidr(vpcCidr)) {
+      return {
+        classification: 'unknown',
+        confidence: 'unknown',
+        reason: 'Cannot verify isolated subnet: VPC CIDR is unavailable or cannot be verified.',
+        hasIgwRoute: false,
+        hasNatRoute: false,
+      };
+    }
+
+    if (!allAssociatedRoutesLocal && (metadata.isolated === true || explicitSubnetType === 'isolated')) {
+      if (associatedRouteTables.length === 0) {
+        return {
+          classification: 'unknown',
+          confidence: 'unknown',
+          reason: 'Subnet designated as isolated lacks verified Route Table association with local VPC routing.',
+          hasIgwRoute: false,
+          hasNatRoute: false,
+        };
+      }
+    }
+
+    if (allAssociatedRoutesLocal && !hasNonLocalRoute) {
+      return {
+        classification: 'isolated',
+        confidence: 'verified',
+        reason: 'Configured as isolated subnet with local-only VPC routing and no internet egress routes.',
+        hasIgwRoute: false,
+        hasNatRoute: false,
+      };
+    }
   }
 
   // 5. Incomplete / Misleading / Ambiguous fallback

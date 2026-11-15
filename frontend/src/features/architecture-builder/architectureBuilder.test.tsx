@@ -1493,4 +1493,221 @@ describe('AWS Networking, Subnet Classification & Boundary Hierarchy', () => {
     expect(remainingNodes[0].parentId).toBeUndefined();
     expect(remainingNodes[0].extent).toBeUndefined();
   });
+
+  it('enforces exact VPC CIDR verification and rejects RFC1918 mismatches or missing VPC CIDR as unknown', async () => {
+    const { classifySubnet } = await import('./utils/networkTopology');
+
+    const rtNode = makeRouteTableNode('rt-cidr-test');
+    rtNode.data.metadata = {
+      routes: [{ destination: '10.0.0.0/16', target: 'local' }],
+    };
+
+    // Subnet without VPC CIDR configured
+    const subnetNoVpcCidr: ArchitectureFlowNode = {
+      id: 'sub-no-vpc-cidr',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: { ...baseSubnetData, metadata: {} },
+    };
+    const assocEdge1: ArchitectureFlowEdge = {
+      id: 'e-assoc-1',
+      source: 'sub-no-vpc-cidr',
+      target: 'rt-cidr-test',
+      type: 'relationship',
+      data: { relationshipType: 'associated-with', direction: 'source-to-target', label: '', metadata: {} },
+    };
+
+    // Unavailable VPC CIDR must return unknown instead of claiming verified isolation
+    const missingVpcResult = classifySubnet(
+      subnetNoVpcCidr.data,
+      subnetNoVpcCidr.id,
+      [subnetNoVpcCidr, rtNode],
+      [assocEdge1],
+    );
+    expect(missingVpcResult.classification).toBe('unknown');
+    expect(missingVpcResult.confidence).toBe('unknown');
+
+    // Subnet with VPC CIDR 192.168.0.0/16, but route table has RFC1918 10.0.0.0/16
+    const subnetMismatchedCidr: ArchitectureFlowNode = {
+      id: 'sub-mismatch-cidr',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: { ...baseSubnetData, metadata: { vpcCidr: '192.168.0.0/16' } },
+    };
+    const assocEdge2: ArchitectureFlowEdge = {
+      id: 'e-assoc-2',
+      source: 'sub-mismatch-cidr',
+      target: 'rt-cidr-test',
+      type: 'relationship',
+      data: { relationshipType: 'associated-with', direction: 'source-to-target', label: '', metadata: {} },
+    };
+
+    const mismatchResult = classifySubnet(
+      subnetMismatchedCidr.data,
+      subnetMismatchedCidr.id,
+      [subnetMismatchedCidr, rtNode],
+      [assocEdge2],
+    );
+    expect(mismatchResult.classification).toBe('unknown');
+    expect(mismatchResult.confidence).toBe('unknown');
+
+    // Subnet with invalid CIDR format (prefix out of range)
+    const subnetInvalidCidr: ArchitectureFlowNode = {
+      id: 'sub-invalid-cidr',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: { ...baseSubnetData, metadata: { vpcCidr: '10.0.0.0/35' } },
+    };
+    const assocEdge3: ArchitectureFlowEdge = {
+      id: 'e-assoc-3',
+      source: 'sub-invalid-cidr',
+      target: 'rt-cidr-test',
+      type: 'relationship',
+      data: { relationshipType: 'associated-with', direction: 'source-to-target', label: '', metadata: {} },
+    };
+
+    const invalidResult = classifySubnet(
+      subnetInvalidCidr.data,
+      subnetInvalidCidr.id,
+      [subnetInvalidCidr, rtNode],
+      [assocEdge3],
+    );
+    expect(invalidResult.classification).toBe('unknown');
+    expect(invalidResult.confidence).toBe('unknown');
+  });
+
+  it('detects multiple conflicting Route Table associations (IGW vs NAT) and returns unknown with diagnostic reason', async () => {
+    const { classifySubnet } = await import('./utils/networkTopology');
+
+    const subnetNode: ArchitectureFlowNode = {
+      id: 'sub-multi-rt',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: { ...baseSubnetData, metadata: { vpcCidr: '10.0.0.0/16' } },
+    };
+
+    // Route Table 1 -> routes to IGW (Public)
+    const rtPublic = makeRouteTableNode('rt-public');
+    const igwNode = makeIgwNode('igw-multi');
+    const edgeRtToIgw: ArchitectureFlowEdge = {
+      id: 'e-rt-igw-multi',
+      source: 'rt-public',
+      target: 'igw-multi',
+      type: 'relationship',
+      data: normalizeEdgeData({
+        relationshipType: 'routes-to',
+        metadata: { destinationCidr: '0.0.0.0/0' },
+      }),
+    };
+
+    // Route Table 2 -> routes to NAT Gateway (Private)
+    const rtPrivate = makeRouteTableNode('rt-private');
+    const natNode = makeNatNode('nat-multi');
+    const edgeRtToNat: ArchitectureFlowEdge = {
+      id: 'e-rt-nat-multi',
+      source: 'rt-private',
+      target: 'nat-multi',
+      type: 'relationship',
+      data: normalizeEdgeData({
+        relationshipType: 'routes-to',
+        metadata: { destinationCidr: '0.0.0.0/0' },
+      }),
+    };
+
+    // Subnet associated with BOTH Route Table 1 and Route Table 2
+    const edgeAssoc1: ArchitectureFlowEdge = {
+      id: 'e-assoc-multi-1',
+      source: 'sub-multi-rt',
+      target: 'rt-public',
+      type: 'relationship',
+      data: { relationshipType: 'associated-with', direction: 'source-to-target', label: '', metadata: {} },
+    };
+    const edgeAssoc2: ArchitectureFlowEdge = {
+      id: 'e-assoc-multi-2',
+      source: 'sub-multi-rt',
+      target: 'rt-private',
+      type: 'relationship',
+      data: { relationshipType: 'associated-with', direction: 'source-to-target', label: '', metadata: {} },
+    };
+
+    const conflictResult = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode, rtPublic, rtPrivate, igwNode, natNode],
+      [edgeAssoc1, edgeAssoc2, edgeRtToIgw, edgeRtToNat],
+    );
+
+    // Must return unknown with diagnostic reason
+    expect(conflictResult.classification).toBe('unknown');
+    expect(conflictResult.confidence).toBe('unknown');
+    expect(conflictResult.reason).toMatch(/conflicting route table associations/i);
+  });
+
+  it('enforces Route Table -> Gateway edge direction and rejects reversed IGW -> Route Table or NAT -> Route Table edges', async () => {
+    const { classifySubnet } = await import('./utils/networkTopology');
+
+    const subnetNode: ArchitectureFlowNode = {
+      id: 'sub-direction-test',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: { ...baseSubnetData, metadata: { vpcCidr: '10.0.0.0/16' } },
+    };
+    const rtNode = makeRouteTableNode('rt-direction');
+    const igwNode = makeIgwNode('igw-direction');
+    const natNode = makeNatNode('nat-direction');
+
+    const assocEdge: ArchitectureFlowEdge = {
+      id: 'e-assoc-dir',
+      source: 'sub-direction-test',
+      target: 'rt-direction',
+      type: 'relationship',
+      data: { relationshipType: 'associated-with', direction: 'source-to-target', label: '', metadata: {} },
+    };
+
+    // Reversed edge: IGW -> Route Table (instead of Route Table -> IGW)
+    const reversedIgwEdge: ArchitectureFlowEdge = {
+      id: 'e-reversed-igw',
+      source: 'igw-direction',
+      target: 'rt-direction',
+      type: 'relationship',
+      data: normalizeEdgeData({
+        relationshipType: 'routes-to',
+        metadata: { destinationCidr: '0.0.0.0/0' },
+      }),
+    };
+
+    const reverseIgwResult = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode, rtNode, igwNode],
+      [assocEdge, reversedIgwEdge],
+    );
+
+    // Reversed edge must NOT establish public reachability
+    expect(reverseIgwResult.classification).toBe('unknown');
+    expect(reverseIgwResult.hasIgwRoute).toBe(false);
+
+    // Reversed edge: NAT -> Route Table (instead of Route Table -> NAT)
+    const reversedNatEdge: ArchitectureFlowEdge = {
+      id: 'e-reversed-nat',
+      source: 'nat-direction',
+      target: 'rt-direction',
+      type: 'relationship',
+      data: normalizeEdgeData({
+        relationshipType: 'routes-to',
+        metadata: { destinationCidr: '0.0.0.0/0' },
+      }),
+    };
+
+    const reverseNatResult = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode, rtNode, natNode],
+      [assocEdge, reversedNatEdge],
+    );
+
+    // Reversed edge must NOT establish private reachability
+    expect(reverseNatResult.classification).toBe('unknown');
+    expect(reverseNatResult.hasNatRoute).toBe(false);
+  });
 });
