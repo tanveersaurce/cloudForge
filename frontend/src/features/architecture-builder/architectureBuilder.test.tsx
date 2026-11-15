@@ -1710,4 +1710,188 @@ describe('AWS Networking, Subnet Classification & Boundary Hierarchy', () => {
     expect(reverseNatResult.classification).toBe('unknown');
     expect(reverseNatResult.hasNatRoute).toBe(false);
   });
+
+  it('rejects ambiguous multiple Route Table associations (public + unknown, private + unknown) as unknown', async () => {
+    const { classifySubnet } = await import('./utils/networkTopology');
+
+    const subnetNode: ArchitectureFlowNode = {
+      id: 'sub-ambiguous',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: { ...baseSubnetData, metadata: { vpcCidr: '10.0.0.0/16' } },
+    };
+
+    const rtPublic = makeRouteTableNode('rt-pub');
+    const rtUnknown = makeRouteTableNode('rt-unk'); // Empty route table with unverified routing
+    const igwNode = makeIgwNode('igw-amb');
+
+    const edgeRtToIgw: ArchitectureFlowEdge = {
+      id: 'e-pub-igw',
+      source: 'rt-pub',
+      target: 'igw-amb',
+      type: 'relationship',
+      data: normalizeEdgeData({
+        relationshipType: 'routes-to',
+        metadata: { destinationCidr: '0.0.0.0/0' },
+      }),
+    };
+
+    const edgeAssocPub: ArchitectureFlowEdge = {
+      id: 'e-assoc-pub',
+      source: 'sub-ambiguous',
+      target: 'rt-pub',
+      type: 'relationship',
+      data: { relationshipType: 'associated-with', direction: 'source-to-target', label: '', metadata: {} },
+    };
+    const edgeAssocUnk: ArchitectureFlowEdge = {
+      id: 'e-assoc-unk',
+      source: 'sub-ambiguous',
+      target: 'rt-unk',
+      type: 'relationship',
+      data: { relationshipType: 'associated-with', direction: 'source-to-target', label: '', metadata: {} },
+    };
+
+    // Case 1: One public Route Table + one unknown Route Table must return unknown
+    const publicPlusUnknownResult = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode, rtPublic, rtUnknown, igwNode],
+      [edgeAssocPub, edgeAssocUnk, edgeRtToIgw],
+    );
+    expect(publicPlusUnknownResult.classification).toBe('unknown');
+    expect(publicPlusUnknownResult.confidence).toBe('unknown');
+    expect(publicPlusUnknownResult.reason).toMatch(/ambiguous route table associations|conflicting route table associations/i);
+
+    // Case 2: One private Route Table + one unknown Route Table must return unknown
+    const rtPrivate = makeRouteTableNode('rt-priv');
+    const natNode = makeNatNode('nat-amb');
+    const edgeRtToNat: ArchitectureFlowEdge = {
+      id: 'e-priv-nat',
+      source: 'rt-priv',
+      target: 'nat-amb',
+      type: 'relationship',
+      data: normalizeEdgeData({
+        relationshipType: 'routes-to',
+        metadata: { destinationCidr: '0.0.0.0/0' },
+      }),
+    };
+    const edgeAssocPriv: ArchitectureFlowEdge = {
+      id: 'e-assoc-priv',
+      source: 'sub-ambiguous',
+      target: 'rt-priv',
+      type: 'relationship',
+      data: { relationshipType: 'associated-with', direction: 'source-to-target', label: '', metadata: {} },
+    };
+
+    const privatePlusUnknownResult = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode, rtPrivate, rtUnknown, natNode],
+      [edgeAssocPriv, edgeAssocUnk, edgeRtToNat],
+    );
+    expect(privatePlusUnknownResult.classification).toBe('unknown');
+    expect(privatePlusUnknownResult.confidence).toBe('unknown');
+    expect(privatePlusUnknownResult.reason).toMatch(/ambiguous route table associations|conflicting route table associations/i);
+  });
+
+  it('verifies that resolveVpcCidr only trusts valid VPC parent resources and ignores invalid parent resources', async () => {
+    const { classifySubnet } = await import('./utils/networkTopology');
+
+    const rtNode = makeRouteTableNode('rt-parent-test');
+    rtNode.data.metadata = {
+      routes: [{ destination: '10.0.0.0/16', target: 'local' }],
+    };
+
+    // Subnet whose parent is an EC2 instance (NOT a VPC)
+    const invalidParentNode: ArchitectureFlowNode = {
+      id: 'ec2-fake-parent',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: {
+        serviceId: 'svc-ec2',
+        serviceSlug: 'amazon-ec2',
+        serviceName: 'Amazon EC2',
+        categorySlug: 'compute',
+        categoryName: 'Compute',
+        iconKey: 'ec2',
+        resourceName: 'EC2',
+        resourceType: 'aws_instance',
+        label: 'Fake Parent EC2',
+        description: '',
+        metadata: { cidr_block: '10.0.0.0/16' }, // Fake CIDR on non-VPC node
+      },
+    };
+
+    const subnetWithInvalidParent: ArchitectureFlowNode = {
+      id: 'sub-invalid-parent',
+      parentId: 'ec2-fake-parent',
+      type: 'awsResource',
+      position: { x: 10, y: 10 },
+      data: { ...baseSubnetData, metadata: {} }, // No direct vpcCidr
+    };
+
+    const assocEdge1: ArchitectureFlowEdge = {
+      id: 'e-assoc-p1',
+      source: 'sub-invalid-parent',
+      target: 'rt-parent-test',
+      type: 'relationship',
+      data: { relationshipType: 'associated-with', direction: 'source-to-target', label: '', metadata: {} },
+    };
+
+    // Invalid parent must not provide trusted VPC CIDR -> returns unknown
+    const invalidParentResult = classifySubnet(
+      subnetWithInvalidParent.data,
+      subnetWithInvalidParent.id,
+      [subnetWithInvalidParent, invalidParentNode, rtNode],
+      [assocEdge1],
+    );
+    expect(invalidParentResult.classification).toBe('unknown');
+    expect(invalidParentResult.confidence).toBe('unknown');
+
+    // Subnet whose parent is a genuine Amazon VPC node
+    const validVpcNode: ArchitectureFlowNode = {
+      id: 'vpc-real-parent',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: {
+        serviceId: 'svc-vpc',
+        serviceSlug: 'amazon-vpc',
+        serviceName: 'Amazon VPC',
+        categorySlug: 'networking-content-delivery',
+        categoryName: 'Networking & Content Delivery',
+        iconKey: 'vpc',
+        resourceName: 'VPC',
+        resourceType: 'aws_vpc',
+        label: 'Production VPC',
+        description: '',
+        metadata: { cidr_block: '10.0.0.0/16' },
+      },
+    };
+
+    const subnetWithValidVpc: ArchitectureFlowNode = {
+      id: 'sub-valid-parent',
+      parentId: 'vpc-real-parent',
+      type: 'awsResource',
+      position: { x: 10, y: 10 },
+      data: { ...baseSubnetData, metadata: {} }, // Resolves from parent VPC
+    };
+
+    const assocEdge2: ArchitectureFlowEdge = {
+      id: 'e-assoc-p2',
+      source: 'sub-valid-parent',
+      target: 'rt-parent-test',
+      type: 'relationship',
+      data: { relationshipType: 'associated-with', direction: 'source-to-target', label: '', metadata: {} },
+    };
+
+    // Valid VPC parent CIDR resolves cleanly -> verified isolated subnet
+    const validParentResult = classifySubnet(
+      subnetWithValidVpc.data,
+      subnetWithValidVpc.id,
+      [subnetWithValidVpc, validVpcNode, rtNode],
+      [assocEdge2],
+    );
+    expect(validParentResult.classification).toBe('isolated');
+    expect(validParentResult.confidence).toBe('verified');
+  });
 });

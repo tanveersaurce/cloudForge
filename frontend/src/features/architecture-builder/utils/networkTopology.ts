@@ -1,3 +1,4 @@
+
 import type {
   ArchitectureFlowEdge,
   ArchitectureFlowNode,
@@ -61,6 +62,21 @@ export function isRouteTableNode(node: ArchitectureFlowNode): boolean {
     slug === 'route-table' ||
     slug === 'aws-route-table' ||
     icon === 'route-table'
+  );
+}
+
+export function isVpcNode(node: ArchitectureFlowNode): boolean {
+  const resType = (node.data.resourceType || '').toLowerCase();
+  const slug = (node.data.serviceSlug || '').toLowerCase();
+  const icon = (node.data.iconKey || '').toLowerCase();
+  const boundaryType = ((node.data.metadata?.boundaryType as string) || '').toLowerCase();
+  return (
+    resType === 'vpc' ||
+    resType === 'aws_vpc' ||
+    slug === 'amazon-vpc' ||
+    slug === 'vpc' ||
+    icon === 'vpc' ||
+    boundaryType === 'vpc'
   );
 }
 
@@ -175,7 +191,7 @@ function resolveVpcCidr(
 
   if (subnetNode.parentId) {
     const parentNode = allNodes.find((n) => n.id === subnetNode.parentId);
-    if (parentNode) {
+    if (parentNode && isVpcNode(parentNode)) {
       const pMeta = parentNode.data.metadata || {};
       const pCidr = (pMeta.cidr_block || pMeta.cidrBlock || pMeta.cidr || pMeta.vpcCidr) as string | undefined;
       if (pCidr && typeof pCidr === 'string' && pCidr.trim()) {
@@ -187,7 +203,7 @@ function resolveVpcCidr(
   const vpcId = (metadata.vpcId || metadata.vpc_id) as string | undefined;
   if (vpcId && typeof vpcId === 'string') {
     const vpcNode = findNodeById(vpcId, allNodes);
-    if (vpcNode) {
+    if (vpcNode && isVpcNode(vpcNode)) {
       const vMeta = vpcNode.data.metadata || {};
       const vCidr = (vMeta.cidr_block || vMeta.cidrBlock || vMeta.cidr || vMeta.vpcCidr) as string | undefined;
       if (vCidr && typeof vCidr === 'string' && vCidr.trim()) {
@@ -439,16 +455,35 @@ export function classifySubnet(
       }
     }
 
-    // Rule 2: Detect multiple conflicting Route Table associations
+    // Rule 2: Detect multiple conflicting or ambiguous Route Table associations
     if (associatedRouteTables.length > 1) {
-      const distinctActiveTypes = new Set(
-        tableClassifications.filter((t) => t !== 'unknown'),
-      );
-      if (distinctActiveTypes.size > 1 || (hasIgwRoute && hasNatRoute)) {
+      const distinctTypes = new Set(tableClassifications);
+
+      if (hasIgwRoute && hasNatRoute) {
         return {
           classification: 'unknown',
           confidence: 'unknown',
           reason: 'Conflicting Route Table associations detected: subnet is associated with multiple route tables providing conflicting routing (IGW vs NAT Gateway).',
+          hasIgwRoute,
+          hasNatRoute,
+        };
+      }
+
+      if (distinctTypes.has('unknown')) {
+        return {
+          classification: 'unknown',
+          confidence: 'unknown',
+          reason: 'Ambiguous Route Table associations detected: subnet is associated with multiple route tables, including route tables with incomplete or unverified routing.',
+          hasIgwRoute,
+          hasNatRoute,
+        };
+      }
+
+      if (distinctTypes.size > 1) {
+        return {
+          classification: 'unknown',
+          confidence: 'unknown',
+          reason: `Conflicting Route Table associations detected: subnet is associated with multiple route tables providing divergent routing (${Array.from(distinctTypes).join(' vs ')}).`,
           hasIgwRoute,
           hasNatRoute,
         };
