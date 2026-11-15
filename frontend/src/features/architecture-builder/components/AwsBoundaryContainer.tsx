@@ -1,9 +1,15 @@
 import { memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { Flag, Globe, Lock, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, Flag, Globe, Lock, ShieldCheck } from 'lucide-react';
 import { AwsLogoIcon, SubnetIcon, VpcIcon } from '@/features/aws-services/utils/officialAwsIcons';
+import { useArchitectureBuilderStore } from '@/store/useArchitectureBuilderStore';
 import { cn } from '@/utils/cn';
-import type { AwsResourceNodeData } from '../types/architecture.types';
+import type {
+  ArchitectureFlowEdge,
+  ArchitectureFlowNode,
+  AwsResourceNodeData,
+} from '../types/architecture.types';
+import { classifySubnet } from '../utils/networkTopology';
 
 const HANDLE_CLASS =
   '!h-2.5 !w-2.5 !rounded-full !border-2 !border-surface !bg-slate-400 hover:!scale-125 hover:!bg-sky-400 transition-all';
@@ -21,9 +27,16 @@ export type BoundaryType =
   | 'availability-zone'
   | 'public-subnet'
   | 'private-subnet'
-  | 'database-subnet';
+  | 'database-subnet'
+  | 'isolated-subnet'
+  | 'unknown-subnet';
 
-export function resolveBoundaryType(data: AwsResourceNodeData): BoundaryType {
+export function resolveBoundaryType(
+  data: AwsResourceNodeData,
+  nodeId?: string,
+  allNodes?: ArchitectureFlowNode[],
+  allEdges?: ArchitectureFlowEdge[],
+): BoundaryType {
   const resourceType = (data.resourceType || '').toLowerCase();
   const label = (data.label || '').toLowerCase();
   const metadata = data.metadata || {};
@@ -36,6 +49,7 @@ export function resolveBoundaryType(data: AwsResourceNodeData): BoundaryType {
     if (explicitType.includes('db') || explicitType.includes('database')) return 'database-subnet';
     if (explicitType.includes('pub')) return 'public-subnet';
     if (explicitType.includes('priv')) return 'private-subnet';
+    if (explicitType.includes('iso')) return 'isolated-subnet';
     if (explicitType.includes('vpc')) return 'vpc';
   }
 
@@ -58,21 +72,24 @@ export function resolveBoundaryType(data: AwsResourceNodeData): BoundaryType {
     resourceType === 'aws_subnet' ||
     label.includes('subnet')
   ) {
-    if (
-      metadata.subnetType === 'database' ||
-      label.includes('database') ||
-      label.includes('db-')
-    ) {
-      return 'database-subnet';
+    const classification = classifySubnet(data, nodeId, allNodes, allEdges);
+    switch (classification.classification) {
+      case 'database':
+        return 'database-subnet';
+      case 'private':
+        return 'private-subnet';
+      case 'public':
+        return 'public-subnet';
+      case 'isolated':
+        return 'isolated-subnet';
+      case 'unknown':
+      default:
+        // If metadata explicitly has a label saying "Subnet", but no route evidence is present yet,
+        // distinguish between unknown or infer from safe hints
+        if (label.includes('public')) return 'public-subnet';
+        if (label.includes('private')) return 'private-subnet';
+        return 'unknown-subnet';
     }
-    if (
-      metadata.subnetType === 'private' ||
-      label.includes('private') ||
-      label.includes('priv-')
-    ) {
-      return 'private-subnet';
-    }
-    return 'public-subnet';
   }
   if (resourceType === 'vpc' || resourceType === 'aws_vpc' || label.includes('vpc')) {
     return 'vpc';
@@ -82,11 +99,14 @@ export function resolveBoundaryType(data: AwsResourceNodeData): BoundaryType {
 }
 
 export const AwsBoundaryContainer = memo(function AwsBoundaryContainer({
-  id: _id,
+  id,
   data,
   selected,
 }: AwsBoundaryContainerProps) {
-  const boundaryType = resolveBoundaryType(data);
+  const canvasNodes = useArchitectureBuilderStore((s) => s.nodes);
+  const canvasEdges = useArchitectureBuilderStore((s) => s.edges);
+
+  const boundaryType = resolveBoundaryType(data, id, canvasNodes, canvasEdges);
   const metadata = data.metadata || {};
 
   const width = typeof metadata.width === 'number' ? metadata.width : undefined;
@@ -97,7 +117,7 @@ export const AwsBoundaryContainer = memo(function AwsBoundaryContainer({
   // Theme & header styling by boundary hierarchy
   let containerClasses = '';
   let headerBadge = null;
-  let title = data.label || 'AWS Boundary';
+  const title = data.label || 'AWS Boundary';
   let minDimensions = 'min-w-[320px] min-h-[240px]';
 
   switch (boundaryType) {
@@ -203,6 +223,36 @@ export const AwsBoundaryContainer = memo(function AwsBoundaryContainer({
           <ShieldCheck className="h-3 w-3 text-indigo-400" />
           <span className="text-[11px] font-semibold">Database Subnet</span>
           {cidr ? <span className="font-mono text-[10px] text-indigo-300">({cidr})</span> : null}
+        </div>
+      );
+      break;
+
+    case 'isolated-subnet':
+      minDimensions = 'min-w-[300px] min-h-[220px]';
+      containerClasses = cn(
+        'border-2 border-slate-600/60 bg-slate-900/30 rounded-lg shadow-sm',
+        selected && 'ring-2 ring-slate-400 border-slate-400',
+      );
+      headerBadge = (
+        <div className="flex items-center gap-1.5 rounded-md bg-slate-800 border border-slate-600 px-2 py-0.5 text-slate-300">
+          <ShieldCheck className="h-3 w-3 text-slate-400" />
+          <span className="text-[11px] font-semibold">Isolated Subnet</span>
+          {cidr ? <span className="font-mono text-[10px] text-slate-400">({cidr})</span> : null}
+        </div>
+      );
+      break;
+
+    case 'unknown-subnet':
+      minDimensions = 'min-w-[300px] min-h-[220px]';
+      containerClasses = cn(
+        'border-2 border-amber-500/60 bg-amber-950/15 rounded-lg shadow-sm',
+        selected && 'ring-2 ring-amber-400 border-amber-400',
+      );
+      headerBadge = (
+        <div className="flex items-center gap-1.5 rounded-md bg-amber-600/20 border border-amber-500/40 px-2 py-0.5 text-amber-200">
+          <AlertTriangle className="h-3 w-3 text-amber-400" />
+          <span className="text-[11px] font-semibold">Subnet (Needs Route Association)</span>
+          {cidr ? <span className="font-mono text-[10px] text-amber-300">({cidr})</span> : null}
         </div>
       );
       break;

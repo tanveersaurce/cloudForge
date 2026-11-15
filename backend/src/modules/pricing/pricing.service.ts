@@ -67,7 +67,7 @@ export class PricingService {
     });
 
     if (!arch) throw ApiError.notFound('Architecture not found');
-    if (arch.userId && arch.userId !== userId) {
+    if (!arch.userId || arch.userId !== userId) {
       throw new ApiError(403, 'You do not have access to this architecture', 'FORBIDDEN');
     }
 
@@ -105,7 +105,7 @@ export class PricingService {
     });
 
     if (!arch) throw ApiError.notFound('Architecture not found');
-    if (arch.userId && arch.userId !== userId) {
+    if (!arch.userId || arch.userId !== userId) {
       throw new ApiError(403, 'You do not have access to this architecture', 'FORBIDDEN');
     }
 
@@ -170,7 +170,7 @@ export class PricingService {
     });
 
     if (!arch) throw ApiError.notFound('Architecture not found');
-    if (arch.userId && arch.userId !== userId) {
+    if (!arch.userId || arch.userId !== userId) {
       throw new ApiError(403, 'You do not have access to this architecture', 'FORBIDDEN');
     }
 
@@ -282,7 +282,7 @@ export class PricingService {
     });
 
     if (!arch) throw ApiError.notFound('Architecture not found');
-    if (arch.userId && arch.userId !== userId) {
+    if (!arch.userId || arch.userId !== userId) {
       throw new ApiError(403, 'You do not have access to this architecture', 'FORBIDDEN');
     }
 

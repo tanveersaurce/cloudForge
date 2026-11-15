@@ -47,6 +47,8 @@ function toFlowNodes(nodes: ArchitectureNodeDto[]): ArchitectureFlowNode[] {
   return nodes.map((node) => ({
     id: node.id,
     type: 'awsResource',
+    parentId: node.parentId ?? undefined,
+    extent: node.extent ?? (node.parentId ? 'parent' : undefined),
     position: { x: node.position.x, y: node.position.y },
     data: { ...node.data, metadata: { ...(node.data.metadata ?? {}) } },
   }));
@@ -68,6 +70,8 @@ export function serializeFlowNodes(nodes: ArchitectureFlowNode[]): ArchitectureN
   return nodes.map((node) => ({
     id: node.id,
     type: 'awsResource',
+    parentId: node.parentId ?? null,
+    extent: (node.extent as 'parent' | undefined) ?? (node.parentId ? 'parent' : null),
     position: {
       x: Math.round(node.position.x * 100) / 100,
       y: Math.round(node.position.y * 100) / 100,
@@ -568,10 +572,15 @@ export const useArchitectureBuilderStore = create<ArchitectureBuilderState>((set
 
   deleteNode: (nodeId) => {
     const state = get();
+    // Safely remove the target node, and unparent any child nodes to prevent orphaned parentId references
+    const nextNodes = state.nodes
+      .filter((n) => n.id !== nodeId)
+      .map((n) => (n.parentId === nodeId ? { ...n, parentId: undefined, extent: undefined } : n));
+
     set({
       past: pushHistory(state.past, state.nodes, state.edges),
       future: [],
-      nodes: state.nodes.filter((n) => n.id !== nodeId),
+      nodes: nextNodes,
       edges: state.edges.filter((e) => e.source !== nodeId && e.target !== nodeId),
       selectedNodeId: state.selectedNodeId === nodeId ? null : state.selectedNodeId,
       isDirty: true,

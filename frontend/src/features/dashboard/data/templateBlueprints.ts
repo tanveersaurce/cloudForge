@@ -20,7 +20,7 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
     region: 'us-east-1',
     viewport: { x: 40, y: 30, zoom: 0.72 },
     nodes: [
-      // 1. AWS Cloud Outer Container
+      // 1. AWS Cloud Outer Container (Root)
       {
         id: 'node-cloud-1',
         type: 'awsResource',
@@ -44,11 +44,13 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
           },
         },
       },
-      // 2. Region Boundary
+      // 2. Region Boundary (Child of Cloud)
       {
         id: 'node-region-1',
         type: 'awsResource',
-        position: { x: 50, y: 70 },
+        parentId: 'node-cloud-1',
+        extent: 'parent',
+        position: { x: 30, y: 50 },
         data: {
           serviceId: 'svc-amazon-vpc',
           serviceSlug: 'amazon-vpc',
@@ -69,11 +71,13 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
           },
         },
       },
-      // 3. Virtual Private Cloud (VPC) Boundary
+      // 3. Virtual Private Cloud (VPC) Boundary (Child of Region)
       {
         id: 'node-vpc-1',
         type: 'awsResource',
-        position: { x: 80, y: 130 },
+        parentId: 'node-region-1',
+        extent: 'parent',
+        position: { x: 30, y: 60 },
         data: {
           serviceId: 'svc-amazon-vpc',
           serviceSlug: 'amazon-vpc',
@@ -94,11 +98,13 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
           },
         },
       },
-      // 4. Availability Zone A Container
+      // 4. Availability Zone A Container (Child of VPC)
       {
         id: 'node-az-1',
         type: 'awsResource',
-        position: { x: 105, y: 195 },
+        parentId: 'node-vpc-1',
+        extent: 'parent',
+        position: { x: 25, y: 65 },
         data: {
           serviceId: 'svc-amazon-vpc',
           serviceSlug: 'amazon-vpc',
@@ -119,11 +125,13 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
           },
         },
       },
-      // 5. Availability Zone B Container
+      // 5. Availability Zone B Container (Child of VPC)
       {
         id: 'node-az-2',
         type: 'awsResource',
-        position: { x: 545, y: 195 },
+        parentId: 'node-vpc-1',
+        extent: 'parent',
+        position: { x: 465, y: 65 },
         data: {
           serviceId: 'svc-amazon-vpc',
           serviceSlug: 'amazon-vpc',
@@ -144,11 +152,13 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
           },
         },
       },
-      // 6. Public Subnet 1 (AZ-A)
+      // 6. Public Subnet 1 (Child of AZ-A)
       {
         id: 'node-pub-sub-1',
         type: 'awsResource',
-        position: { x: 125, y: 245 },
+        parentId: 'node-az-1',
+        extent: 'parent',
+        position: { x: 20, y: 50 },
         data: {
           serviceId: 'svc-amazon-vpc',
           serviceSlug: 'amazon-vpc',
@@ -171,11 +181,13 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
           },
         },
       },
-      // 7. Public Subnet 2 (AZ-B)
+      // 7. Public Subnet 2 (Child of AZ-B)
       {
         id: 'node-pub-sub-2',
         type: 'awsResource',
-        position: { x: 565, y: 245 },
+        parentId: 'node-az-2',
+        extent: 'parent',
+        position: { x: 20, y: 50 },
         data: {
           serviceId: 'svc-amazon-vpc',
           serviceSlug: 'amazon-vpc',
@@ -198,11 +210,13 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
           },
         },
       },
-      // 8. Private Subnet 1 (AZ-A)
+      // 8. Private Subnet 1 (Child of AZ-A)
       {
         id: 'node-priv-sub-1',
         type: 'awsResource',
-        position: { x: 125, y: 470 },
+        parentId: 'node-az-1',
+        extent: 'parent',
+        position: { x: 20, y: 275 },
         data: {
           serviceId: 'svc-amazon-vpc',
           serviceSlug: 'amazon-vpc',
@@ -225,11 +239,13 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
           },
         },
       },
-      // 9. Private Subnet 2 (AZ-B)
+      // 9. Private Subnet 2 (Child of AZ-B)
       {
         id: 'node-priv-sub-2',
         type: 'awsResource',
-        position: { x: 565, y: 470 },
+        parentId: 'node-az-2',
+        extent: 'parent',
+        position: { x: 20, y: 275 },
         data: {
           serviceId: 'svc-amazon-vpc',
           serviceSlug: 'amazon-vpc',
@@ -254,11 +270,13 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       },
 
       // --- CHILD AWS ARCHITECTURE RESOURCE NODES ---
-      // Ingress ALB across public subnets
+      // Ingress ALB across public subnets (in VPC)
       {
         id: 'node-alb-1',
         type: 'awsResource',
-        position: { x: 410, y: 285 },
+        parentId: 'node-vpc-1',
+        extent: 'parent',
+        position: { x: 330, y: 155 },
         data: {
           serviceId: 'svc-elastic-load-balancing',
           serviceSlug: 'elastic-load-balancing',
@@ -280,7 +298,9 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-nat-1',
         type: 'awsResource',
-        position: { x: 155, y: 295 },
+        parentId: 'node-pub-sub-1',
+        extent: 'parent',
+        position: { x: 30, y: 50 },
         data: {
           serviceId: 'svc-aws-nat-gateway',
           serviceSlug: 'aws-nat-gateway',
@@ -301,7 +321,9 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-ec2-1',
         type: 'awsResource',
-        position: { x: 150, y: 520 },
+        parentId: 'node-priv-sub-1',
+        extent: 'parent',
+        position: { x: 25, y: 50 },
         data: {
           serviceId: 'svc-amazon-ec2',
           serviceSlug: 'amazon-ec2',
@@ -321,35 +343,13 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
           },
         },
       },
-      // EC2 App Server in Private Subnet 2
-      {
-        id: 'node-ec2-2',
-        type: 'awsResource',
-        position: { x: 590, y: 520 },
-        data: {
-          serviceId: 'svc-amazon-ec2',
-          serviceSlug: 'amazon-ec2',
-          serviceName: 'Amazon EC2',
-          categorySlug: 'compute',
-          categoryName: 'Compute',
-          iconKey: 'ec2',
-          resourceName: 'App Server (Standby)',
-          resourceType: 'ec2-instance',
-          label: 'App Server Standby (t3.medium)',
-          description: 'Redundant backend application server in secondary Availability Zone.',
-          metadata: {
-            instanceType: 't3.medium',
-            operatingSystem: 'Amazon Linux 2023',
-            storageSizeGb: 30,
-            volumeType: 'gp3',
-          },
-        },
-      },
       // RDS Primary in Private Subnet 1
       {
         id: 'node-rds-1',
         type: 'awsResource',
-        position: { x: 260, y: 520 },
+        parentId: 'node-priv-sub-1',
+        extent: 'parent',
+        position: { x: 135, y: 50 },
         data: {
           serviceId: 'svc-amazon-rds',
           serviceSlug: 'amazon-rds',
@@ -369,11 +369,39 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
           },
         },
       },
+      // EC2 App Server in Private Subnet 2
+      {
+        id: 'node-ec2-2',
+        type: 'awsResource',
+        parentId: 'node-priv-sub-2',
+        extent: 'parent',
+        position: { x: 25, y: 50 },
+        data: {
+          serviceId: 'svc-amazon-ec2',
+          serviceSlug: 'amazon-ec2',
+          serviceName: 'Amazon EC2',
+          categorySlug: 'compute',
+          categoryName: 'Compute',
+          iconKey: 'ec2',
+          resourceName: 'App Server (Standby)',
+          resourceType: 'ec2-instance',
+          label: 'App Server Standby (t3.medium)',
+          description: 'Redundant backend application server in secondary Availability Zone.',
+          metadata: {
+            instanceType: 't3.medium',
+            operatingSystem: 'Amazon Linux 2023',
+            storageSizeGb: 30,
+            volumeType: 'gp3',
+          },
+        },
+      },
       // RDS Standby in Private Subnet 2
       {
         id: 'node-rds-2',
         type: 'awsResource',
-        position: { x: 700, y: 520 },
+        parentId: 'node-priv-sub-2',
+        extent: 'parent',
+        position: { x: 135, y: 50 },
         data: {
           serviceId: 'svc-amazon-rds',
           serviceSlug: 'amazon-rds',
@@ -393,11 +421,13 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
           },
         },
       },
-      // Amazon S3 Bucket (outside VPC in Region)
+      // Amazon S3 Bucket (in Region)
       {
         id: 'node-s3-1',
         type: 'awsResource',
-        position: { x: 1000, y: 250 },
+        parentId: 'node-region-1',
+        extent: 'parent',
+        position: { x: 950, y: 180 },
         data: {
           serviceId: 'svc-amazon-s3',
           serviceSlug: 'amazon-s3',
@@ -415,11 +445,13 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
           },
         },
       },
-      // Amazon CloudWatch (outside VPC in Region)
+      // Amazon CloudWatch (in Region)
       {
         id: 'node-cw-1',
         type: 'awsResource',
-        position: { x: 1000, y: 460 },
+        parentId: 'node-region-1',
+        extent: 'parent',
+        position: { x: 950, y: 390 },
         data: {
           serviceId: 'svc-amazon-cloudwatch',
           serviceSlug: 'amazon-cloudwatch',
@@ -427,7 +459,7 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
           categorySlug: 'management-governance',
           categoryName: 'Management & Governance',
           iconKey: 'cloudwatch',
-          resourceName: 'CloudWatch Logs & Metrics',
+          resourceName: 'CloudWatch Telemetry',
           resourceType: 'amazon-cloudwatch',
           label: 'CloudWatch Telemetry',
           description: 'Centralized observability, alarms, and log groups.',
@@ -563,7 +595,9 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-region-sls',
         type: 'awsResource',
-        position: { x: 60, y: 80 },
+        parentId: 'node-cloud-sls',
+        extent: 'parent',
+        position: { x: 30, y: 50 },
         data: {
           serviceId: 'svc-amazon-vpc',
           serviceSlug: 'amazon-vpc',
@@ -587,7 +621,9 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-api-gw',
         type: 'awsResource',
-        position: { x: 100, y: 220 },
+        parentId: 'node-region-sls',
+        extent: 'parent',
+        position: { x: 40, y: 140 },
         data: {
           serviceId: 'svc-amazon-api-gateway',
           serviceSlug: 'amazon-api-gateway',
@@ -608,7 +644,9 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-lambda-auth',
         type: 'awsResource',
-        position: { x: 380, y: 140 },
+        parentId: 'node-region-sls',
+        extent: 'parent',
+        position: { x: 320, y: 60 },
         data: {
           serviceId: 'svc-aws-lambda',
           serviceSlug: 'aws-lambda',
@@ -630,7 +668,9 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-lambda-handler',
         type: 'awsResource',
-        position: { x: 380, y: 310 },
+        parentId: 'node-region-sls',
+        extent: 'parent',
+        position: { x: 320, y: 230 },
         data: {
           serviceId: 'svc-aws-lambda',
           serviceSlug: 'aws-lambda',
@@ -652,7 +692,9 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-dynamodb-table',
         type: 'awsResource',
-        position: { x: 680, y: 310 },
+        parentId: 'node-region-sls',
+        extent: 'parent',
+        position: { x: 620, y: 230 },
         data: {
           serviceId: 'svc-amazon-dynamodb',
           serviceSlug: 'amazon-dynamodb',
@@ -673,7 +715,9 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-cw-sls',
         type: 'awsResource',
-        position: { x: 680, y: 140 },
+        parentId: 'node-region-sls',
+        extent: 'parent',
+        position: { x: 620, y: 60 },
         data: {
           serviceId: 'svc-amazon-cloudwatch',
           serviceSlug: 'amazon-cloudwatch',
@@ -769,7 +813,9 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-region-vpc',
         type: 'awsResource',
-        position: { x: 45, y: 65 },
+        parentId: 'node-cloud-vpc',
+        extent: 'parent',
+        position: { x: 25, y: 45 },
         data: {
           serviceId: 'svc-amazon-vpc',
           serviceSlug: 'amazon-vpc',
@@ -793,7 +839,9 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-vpc-core',
         type: 'awsResource',
-        position: { x: 70, y: 110 },
+        parentId: 'node-region-vpc',
+        extent: 'parent',
+        position: { x: 25, y: 45 },
         data: {
           serviceId: 'svc-amazon-vpc',
           serviceSlug: 'amazon-vpc',
@@ -817,7 +865,9 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-igw',
         type: 'awsResource',
-        position: { x: 880, y: 130 },
+        parentId: 'node-region-vpc',
+        extent: 'parent',
+        position: { x: 810, y: 65 },
         data: {
           serviceId: 'svc-amazon-vpc',
           serviceSlug: 'amazon-vpc',
@@ -835,7 +885,9 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-pub-sub-core',
         type: 'awsResource',
-        position: { x: 95, y: 170 },
+        parentId: 'node-vpc-core',
+        extent: 'parent',
+        position: { x: 25, y: 60 },
         data: {
           serviceId: 'svc-amazon-vpc',
           serviceSlug: 'amazon-vpc',
@@ -861,7 +913,9 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-nat-gw',
         type: 'awsResource',
-        position: { x: 130, y: 230 },
+        parentId: 'node-pub-sub-core',
+        extent: 'parent',
+        position: { x: 35, y: 60 },
         data: {
           serviceId: 'svc-aws-nat-gateway',
           serviceSlug: 'aws-nat-gateway',
@@ -881,7 +935,9 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-priv-sub-core',
         type: 'awsResource',
-        position: { x: 470, y: 170 },
+        parentId: 'node-vpc-core',
+        extent: 'parent',
+        position: { x: 400, y: 60 },
         data: {
           serviceId: 'svc-amazon-vpc',
           serviceSlug: 'amazon-vpc',

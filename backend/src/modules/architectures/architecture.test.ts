@@ -756,4 +756,71 @@ describe('Architecture CRUD, Canvas Persistence, Validation & Ownership APIs', (
     expect(reloadedEc2.data.metadata.instance_type).toBe('t3.medium');
     expect(reloadedEc2.data.metadata.root_volume_size).toBe(40);
   });
+
+  it('validates parent-child hierarchy: persists valid parentId & extent: "parent", and rejects invalid parentId pointing to non-existent node', async () => {
+    const cookie = await registerAndGetCookie('Aarav Sharma', 'aarav@cloudforge.dev');
+
+    const createRes = await request(app)
+      .post('/api/architectures')
+      .set('Cookie', cookie)
+      .send({ name: 'Hierarchy Validation Test' });
+    const archId = createRes.body.data.id as string;
+
+    const vpcNode = makeSampleNode('node-vpc-root', { label: 'Root VPC', resourceName: 'VPC' });
+    const subnetNode = {
+      ...makeSampleNode('node-subnet-child', { label: 'Public Subnet', resourceName: 'Subnet' }),
+      parentId: 'node-vpc-root',
+      extent: 'parent' as const,
+    };
+
+    // Valid parentId and extent save successfully
+    const validSaveRes = await request(app)
+      .put(`/api/architectures/${archId}/canvas`)
+      .set('Cookie', cookie)
+      .send({
+        nodes: [vpcNode, subnetNode],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      });
+
+    expect(validSaveRes.status).toBe(200);
+    expect(validSaveRes.body.data.nodes).toHaveLength(2);
+    const childNode = validSaveRes.body.data.nodes.find((n: { id: string }) => n.id === 'node-subnet-child');
+    expect(childNode.parentId).toBe('node-vpc-root');
+    expect(childNode.extent).toBe('parent');
+
+    // Reload and verify persisted hierarchy
+    const reloadRes = await request(app)
+      .get(`/api/architectures/${archId}`)
+      .set('Cookie', cookie);
+    expect(reloadRes.status).toBe(200);
+    const reloadedChild = reloadRes.body.data.nodes.find((n: { id: string }) => n.id === 'node-subnet-child');
+    expect(reloadedChild.parentId).toBe('node-vpc-root');
+    expect(reloadedChild.extent).toBe('parent');
+
+    // Reject invalid parentId referencing a missing node
+    const invalidChild = {
+      ...makeSampleNode('node-orphan', { label: 'Orphan Node', resourceName: 'EC2' }),
+      parentId: 'non-existent-parent-id',
+      extent: 'parent' as const,
+    };
+
+    const invalidSaveRes = await request(app)
+      .put(`/api/architectures/${archId}/canvas`)
+      .set('Cookie', cookie)
+      .send({
+        nodes: [vpcNode, invalidChild],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      });
+
+    expect(invalidSaveRes.status).toBe(400);
+    expect(invalidSaveRes.body.success).toBe(false);
+    expect(invalidSaveRes.body.error.message).toBe('Request validation failed');
+    expect(invalidSaveRes.body.error.details.nodes).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/references missing parentId/i),
+      ]),
+    );
+  });
 });

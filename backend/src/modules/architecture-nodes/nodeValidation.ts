@@ -19,6 +19,8 @@ export const architectureNodeSchema: z.ZodType<ArchitectureNodeDto, z.ZodTypeDef
   z.object({
   id: z.string().trim().min(1, 'Node id is required'),
   type: z.literal('awsResource'),
+  parentId: z.string().trim().nullable().optional(),
+  extent: z.literal('parent').nullable().optional(),
   position: z.object({
     x: z.number().finite('position.x must be a finite number'),
     y: z.number().finite('position.y must be a finite number'),
@@ -39,5 +41,15 @@ export const architectureNodesArraySchema = z
         });
       }
       seenIds.add(node.id);
+    });
+
+    nodes.forEach((node, index) => {
+      if (node.parentId && !seenIds.has(node.parentId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Node "${node.id}" references missing parentId "${node.parentId}"`,
+          path: [index, 'parentId'],
+        });
+      }
     });
   });

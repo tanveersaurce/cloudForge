@@ -75,6 +75,8 @@ export type ArchitectureFlowEdge = Edge<AwsResourceEdgeData>;
 export interface ArchitectureNodeDto {
   id: string;
   type: 'awsResource';
+  parentId?: string | null;
+  extent?: 'parent' | null;
   position: {
     x: number;
     y: number;

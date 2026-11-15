@@ -831,3 +831,179 @@ describe('Phase 06 Dynamic AWS Configuration Engine', () => {
     });
   });
 });
+
+describe('AWS Networking, Subnet Classification & Boundary Hierarchy', () => {
+  it('correctly classifies subnets via explicit metadata, topology route inspection, and handles unknown fallback', async () => {
+    const { classifySubnet } = await import('./utils/networkTopology');
+
+    const baseData = {
+      serviceId: 'svc-vpc',
+      serviceSlug: 'amazon-vpc',
+      serviceName: 'Amazon VPC',
+      categorySlug: 'networking-content-delivery',
+      categoryName: 'Networking & Content Delivery',
+      iconKey: 'vpc',
+      resourceName: 'Subnet',
+      resourceType: 'aws_subnet',
+      label: 'Test Subnet',
+      description: 'Subnet for classification testing',
+    };
+
+    // 1. Explicit metadata checks
+    const publicMeta = classifySubnet({ ...baseData, metadata: { subnetType: 'public' } });
+    expect(publicMeta.classification).toBe('public');
+    expect(publicMeta.confidence).toBe('verified');
+    expect(publicMeta.hasIgwRoute).toBe(true);
+
+    const privateMeta = classifySubnet({ ...baseData, metadata: { subnetType: 'private' } });
+    expect(privateMeta.classification).toBe('private');
+    expect(privateMeta.confidence).toBe('verified');
+    expect(privateMeta.hasNatRoute).toBe(true);
+
+    const databaseMeta = classifySubnet({ ...baseData, metadata: { subnetType: 'database' } });
+    expect(databaseMeta.classification).toBe('database');
+    expect(databaseMeta.confidence).toBe('verified');
+
+    const isolatedMeta = classifySubnet({ ...baseData, metadata: { subnetType: 'isolated' } });
+    expect(isolatedMeta.classification).toBe('isolated');
+    expect(isolatedMeta.confidence).toBe('verified');
+
+    // 2. Topology inspection: IGW connected -> public
+    const subnetNode: ArchitectureFlowNode = {
+      id: 'sub-topo-1',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: { ...baseData, metadata: {} },
+    };
+    const igwNode: ArchitectureFlowNode = {
+      id: 'igw-1',
+      type: 'awsResource',
+      position: { x: 100, y: 0 },
+      data: {
+        serviceId: 'svc-igw',
+        serviceSlug: 'internet-gateway',
+        serviceName: 'Internet Gateway',
+        categorySlug: 'networking-content-delivery',
+        categoryName: 'Networking & Content Delivery',
+        iconKey: 'vpc',
+        resourceName: 'Internet Gateway',
+        resourceType: 'aws_internet_gateway',
+        label: 'Main IGW',
+        description: '',
+        metadata: {},
+      },
+    };
+    const igwEdge: ArchitectureFlowEdge = {
+      id: 'e-sub-igw',
+      source: 'sub-topo-1',
+      target: 'igw-1',
+      type: 'relationship',
+      data: normalizeEdgeData({ relationshipType: 'routes-traffic-to' }),
+    };
+
+    const igwClassified = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode, igwNode],
+      [igwEdge],
+    );
+    expect(igwClassified.classification).toBe('public');
+    expect(igwClassified.confidence).toBe('verified');
+    expect(igwClassified.hasIgwRoute).toBe(true);
+
+    // 3. Topology inspection: NAT Gateway connected -> private
+    const natNode: ArchitectureFlowNode = {
+      id: 'nat-1',
+      type: 'awsResource',
+      position: { x: 100, y: 0 },
+      data: {
+        ...igwNode.data,
+        serviceSlug: 'nat-gateway',
+        resourceType: 'aws_nat_gateway',
+        label: 'NAT Gateway',
+      },
+    };
+    const natEdge: ArchitectureFlowEdge = {
+      id: 'e-sub-nat',
+      source: 'sub-topo-1',
+      target: 'nat-1',
+      type: 'relationship',
+      data: normalizeEdgeData({ relationshipType: 'routes-traffic-to' }),
+    };
+
+    const natClassified = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode, natNode],
+      [natEdge],
+    );
+    expect(natClassified.classification).toBe('private');
+    expect(natClassified.confidence).toBe('verified');
+    expect(natClassified.hasNatRoute).toBe(true);
+
+    // 4. Ambiguous / missing configuration -> unknown
+    const unknownClassified = classifySubnet({ ...baseData, metadata: {} });
+    expect(unknownClassified.classification).toBe('unknown');
+    expect(unknownClassified.confidence).toBe('unknown');
+    expect(unknownClassified.reason).toMatch(/insufficient networking configuration/i);
+  });
+
+  it('safely unparents child nodes when a parent boundary node is deleted', () => {
+    useArchitectureBuilderStore.getState().resetBuilder();
+
+    const parentNode: ArchitectureFlowNode = {
+      id: 'vpc-parent',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: {
+        serviceId: 'svc-vpc',
+        serviceSlug: 'amazon-vpc',
+        serviceName: 'Amazon VPC',
+        categorySlug: 'networking-content-delivery',
+        categoryName: 'Networking & Content Delivery',
+        iconKey: 'vpc',
+        resourceName: 'VPC',
+        resourceType: 'aws_vpc',
+        label: 'Main VPC',
+        description: '',
+        metadata: {},
+      },
+    };
+
+    const childNode: ArchitectureFlowNode = {
+      id: 'sub-child',
+      parentId: 'vpc-parent',
+      extent: 'parent',
+      type: 'awsResource',
+      position: { x: 20, y: 40 },
+      data: {
+        serviceId: 'svc-vpc',
+        serviceSlug: 'amazon-vpc',
+        serviceName: 'Amazon VPC',
+        categorySlug: 'networking-content-delivery',
+        categoryName: 'Networking & Content Delivery',
+        iconKey: 'vpc',
+        resourceName: 'Subnet',
+        resourceType: 'aws_subnet',
+        label: 'Private Subnet',
+        description: '',
+        metadata: {},
+      },
+    };
+
+    useArchitectureBuilderStore.setState({
+      nodes: [parentNode, childNode],
+      edges: [],
+    });
+
+    // Delete parent node
+    useArchitectureBuilderStore.getState().deleteNode('vpc-parent');
+
+    const remainingNodes = useArchitectureBuilderStore.getState().nodes;
+    expect(remainingNodes).toHaveLength(1);
+    expect(remainingNodes[0].id).toBe('sub-child');
+    // Child must be unparented so no dangling parentId exists
+    expect(remainingNodes[0].parentId).toBeUndefined();
+    expect(remainingNodes[0].extent).toBeUndefined();
+  });
+});
