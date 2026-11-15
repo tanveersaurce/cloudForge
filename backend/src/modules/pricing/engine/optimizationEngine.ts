@@ -277,34 +277,65 @@ export class CostOptimizationEngine {
     hasOverlappingRecommendations: boolean;
     overlapNotes: string[];
   } {
-    const individualSavingsSum =
-      Math.round(recommendations.reduce((sum, r) => sum + r.estimatedMonthlySavings, 0) * 100) / 100;
+    const overlapNotes: string[] = [];
 
-    if (recommendations.length === 0) {
-      return {
-        individualSavingsSum: 0,
-        combinedAchievableSavings: 0,
-        hasOverlappingRecommendations: false,
-        overlapNotes: [],
-      };
-    }
-
-    // Build resource cost lookup if provided
+    // 1. Input Validation: Validate resource cost inputs
     const costLookup = new Map<string, number>();
     if (resourceCostsInput) {
-      if (resourceCostsInput instanceof Map) {
-        for (const [k, v] of resourceCostsInput.entries()) {
-          costLookup.set(k, v);
-        }
-      } else {
-        for (const [k, v] of Object.entries(resourceCostsInput)) {
-          costLookup.set(k, v);
+      const entries =
+        resourceCostsInput instanceof Map
+          ? resourceCostsInput.entries()
+          : Object.entries(resourceCostsInput);
+      for (const [k, v] of entries) {
+        if (typeof v === 'number' && !isNaN(v) && isFinite(v) && v >= 0) {
+          costLookup.set(k, Math.round(v * 100) / 100);
+        } else {
+          overlapNotes.push(
+            `Resource "${k}" has invalid input cost (${v}). Negative, NaN, or infinite costs are ignored and treated as unknown.`,
+          );
         }
       }
     }
 
-    const architecturalRecs = recommendations.filter((r) => r.category !== 'pricing-model');
-    const pricingModelRecs = recommendations.filter((r) => r.category === 'pricing-model');
+    // Validate recommendation numbers: estimatedCurrentCost and estimatedMonthlySavings
+    const sanitizedRecs: CostOptimizationRecommendation[] = recommendations.map((r) => {
+      let validCurrent = r.estimatedCurrentCost;
+      let validMonthly = r.estimatedMonthlySavings;
+
+      if (typeof validCurrent !== 'number' || isNaN(validCurrent) || !isFinite(validCurrent) || validCurrent < 0) {
+        overlapNotes.push(
+          `Recommendation "${r.title}" has invalid estimatedCurrentCost (${r.estimatedCurrentCost}). Treated as $0.00.`,
+        );
+        validCurrent = 0;
+      }
+      if (typeof validMonthly !== 'number' || isNaN(validMonthly) || !isFinite(validMonthly) || validMonthly < 0) {
+        overlapNotes.push(
+          `Recommendation "${r.title}" has invalid estimatedMonthlySavings (${r.estimatedMonthlySavings}). Treated as $0.00.`,
+        );
+        validMonthly = 0;
+      }
+
+      return {
+        ...r,
+        estimatedCurrentCost: validCurrent,
+        estimatedMonthlySavings: validMonthly,
+      };
+    });
+
+    const individualSavingsSum =
+      Math.round(sanitizedRecs.reduce((sum, r) => sum + r.estimatedMonthlySavings, 0) * 100) / 100;
+
+    if (sanitizedRecs.length === 0) {
+      return {
+        individualSavingsSum: 0,
+        combinedAchievableSavings: 0,
+        hasOverlappingRecommendations: overlapNotes.length > 0,
+        overlapNotes,
+      };
+    }
+
+    const architecturalRecs = sanitizedRecs.filter((r) => r.category !== 'pricing-model');
+    const pricingModelRecs = sanitizedRecs.filter((r) => r.category === 'pricing-model');
 
     interface ResourceState {
       currentCost: number;
@@ -315,7 +346,6 @@ export class CostOptimizationEngine {
 
     const resourceStates = new Map<string, ResourceState>();
     let combinedSavings = 0;
-    const overlapNotes: string[] = [];
 
     function getOrInitResourceState(resId: string, fallbackShare: number): ResourceState {
       let state = resourceStates.get(resId);
@@ -335,7 +365,11 @@ export class CostOptimizationEngine {
 
     // Helper: Compute effective costs and weights for a recommendation
     // Fixes partially unknown resource costs by never silently assigning zero weight to unknown resources
-    function computeAllocationCosts(rec: CostOptimizationRecommendation): {
+    function computeAllocationCosts(
+      rec: CostOptimizationRecommendation,
+      currentStates: Map<string, ResourceState>,
+      recordWarnings = false,
+    ): {
       effectiveCosts: number[];
       weights: number[];
     } {
@@ -349,7 +383,7 @@ export class CostOptimizationEngine {
       }
 
       const costInfos: CostInfo[] = rec.affectedResourceIds.map((resId) => {
-        const state = resourceStates.get(resId);
+        const state = currentStates.get(resId);
         if (state !== undefined) {
           return { resId, cost: state.currentCost, isKnown: true };
         }
@@ -364,14 +398,15 @@ export class CostOptimizationEngine {
       const sumKnownCosts = knownItems.reduce((sum, c) => sum + c.cost, 0);
 
       const effectiveCosts: number[] = [];
+      let unknownFallback = 0;
+
       if (unknownItems.length === 0) {
         for (const item of costInfos) effectiveCosts.push(item.cost);
       } else if (knownItems.length === 0) {
-        const fallback = rec.estimatedCurrentCost > 0 ? rec.estimatedCurrentCost / resourceCount : equalShareCost;
-        for (let i = 0; i < resourceCount; i++) effectiveCosts.push(fallback);
+        unknownFallback = rec.estimatedCurrentCost > 0 ? rec.estimatedCurrentCost / resourceCount : equalShareCost;
+        for (let i = 0; i < resourceCount; i++) effectiveCosts.push(unknownFallback);
       } else {
         // Partially known: some known, some unknown. Explicit fallback allocation:
-        let unknownFallback: number;
         if (rec.estimatedCurrentCost > sumKnownCosts) {
           unknownFallback = (rec.estimatedCurrentCost - sumKnownCosts) / unknownItems.length;
         } else if (knownItems.length > 0 && sumKnownCosts > 0) {
@@ -382,6 +417,19 @@ export class CostOptimizationEngine {
 
         for (const item of costInfos) {
           effectiveCosts.push(item.isKnown ? item.cost : unknownFallback);
+        }
+      }
+
+      // Record Fallback Transparency warning if costs were imputed
+      if (recordWarnings && unknownItems.length > 0) {
+        if (knownItems.length > 0) {
+          overlapNotes.push(
+            `Recommendation "${rec.title}" has partially unknown resource costs: actual known cost for [${knownItems.map((k) => `${k.resId}: $${k.cost.toFixed(2)}`).join(', ')}], and imputed estimated fallback cost of $${unknownFallback.toFixed(2)} for [${unknownItems.map((u) => u.resId).join(', ')}].`,
+          );
+        } else {
+          overlapNotes.push(
+            `Recommendation "${rec.title}" has unknown resource costs for [${unknownItems.map((u) => u.resId).join(', ')}]; imputed estimated fallback cost of $${unknownFallback.toFixed(2)} each.`,
+          );
         }
       }
 
@@ -402,7 +450,7 @@ export class CostOptimizationEngine {
 
     // Helper: Estimate achievable savings for an architectural recommendation against resource baselines
     function estimateArchitecturalAchievable(rec: CostOptimizationRecommendation): number {
-      const { effectiveCosts, weights } = computeAllocationCosts(rec);
+      const { effectiveCosts, weights } = computeAllocationCosts(rec, resourceStates, false);
 
       const discountRatio =
         rec.savingsPercentage > 0
@@ -429,50 +477,230 @@ export class CostOptimizationEngine {
       return Math.round(Math.min(rec.estimatedMonthlySavings, achievableTotal) * 100) / 100;
     }
 
-    // Recommendation Dominance:
-    // Sort architectural recommendations by achievable savings descending.
-    // If achievable savings are equal, tie-break by estimatedMonthlySavings descending,
-    // and finally by recommendationId ascending for strict determinism regardless of input order.
-    const sortedArchitecturalRecs = [...architecturalRecs].sort((a, b) => {
-      const achievableA = estimateArchitecturalAchievable(a);
-      const achievableB = estimateArchitecturalAchievable(b);
-      if (Math.abs(achievableB - achievableA) > 0.001) {
-        return achievableB - achievableA;
-      }
-      if (b.estimatedMonthlySavings !== a.estimatedMonthlySavings) {
-        return b.estimatedMonthlySavings - a.estimatedMonthlySavings;
-      }
-      return a.recommendationId.localeCompare(b.recommendationId);
-    });
+    // Helper: Check if two architectural recommendations conflict
+    function architecturalRecsConflict(
+      a: CostOptimizationRecommendation,
+      b: CostOptimizationRecommendation,
+    ): { hasConflict: boolean; resId?: string; key?: string } {
+      const aKeys = Object.keys(a.proposedConfiguration || {});
+      const bKeys = Object.keys(b.proposedConfiguration || {});
+      if (aKeys.length === 0 || bKeys.length === 0) return { hasConflict: false };
 
-    // 1. Process Architectural Recommendations
-    for (const rec of sortedArchitecturalRecs) {
-      // Check conflicts (mutually exclusive modifications on same attribute)
-      let isConflicted = false;
-      let conflictMsg = '';
+      const commonKeys = aKeys.filter((k) => bKeys.includes(k));
+      if (commonKeys.length === 0) return { hasConflict: false };
 
-      for (const resId of rec.affectedResourceIds) {
-        const state = resourceStates.get(resId);
-        if (state) {
-          const proposedKeys = Object.keys(rec.proposedConfiguration || {});
-          for (const key of proposedKeys) {
-            if (state.modifiedAttributes.has(key)) {
-              isConflicted = true;
-              conflictMsg = `Recommendation "${rec.title}" is mutually exclusive with accepted recommendation "${state.modifiedAttributes.get(key)}" on resource "${resId}" (both modify ${key}). Kept dominant recommendation.`;
-              break;
-            }
-          }
-          if (isConflicted) break;
+      for (const resId of a.affectedResourceIds) {
+        if (b.affectedResourceIds.includes(resId)) {
+          return { hasConflict: true, resId, key: commonKeys[0] };
         }
       }
+      return { hasConflict: false };
+    }
 
-      if (isConflicted) {
-        overlapNotes.push(conflictMsg);
-        continue;
+    // Simulate an architectural candidate subset to evaluate total achievable savings
+    function simulateArchitecturalSubset(
+      subset: CostOptimizationRecommendation[],
+      initialStates: Map<string, ResourceState>,
+    ): { totalSavings: number } {
+      const simStates = new Map<string, ResourceState>();
+      for (const [k, v] of initialStates.entries()) {
+        simStates.set(k, {
+          currentCost: v.currentCost,
+          remainingCost: v.remainingCost,
+          appliedSavings: v.appliedSavings,
+          modifiedAttributes: new Map(v.modifiedAttributes),
+        });
       }
 
-      // Cost-Weighted Resource Allocation with Fallback:
-      const { effectiveCosts, weights } = computeAllocationCosts(rec);
+      let simTotal = 0;
+      for (const rec of subset) {
+        const { effectiveCosts, weights } = computeAllocationCosts(rec, simStates, false);
+        const discountRatio =
+          rec.savingsPercentage > 0
+            ? Math.min(1, Math.max(0, rec.savingsPercentage / 100))
+            : rec.estimatedCurrentCost > 0
+              ? Math.min(1, Math.max(0, rec.estimatedMonthlySavings / rec.estimatedCurrentCost))
+              : 0;
+
+        let recSav = 0;
+        for (let i = 0; i < rec.affectedResourceIds.length; i++) {
+          const resId = rec.affectedResourceIds[i];
+          const weight = weights[i];
+          const nominalSavings = rec.estimatedMonthlySavings * weight;
+          const fallbackCost = effectiveCosts[i];
+
+          let state = simStates.get(resId);
+          if (!state) {
+            const known = costLookup.get(resId);
+            const init = known !== undefined ? known : fallbackCost;
+            state = { currentCost: init, remainingCost: init, appliedSavings: 0, modifiedAttributes: new Map() };
+            simStates.set(resId, state);
+
+            const maxPoss = Math.min(state.remainingCost, nominalSavings);
+            const alloc = Math.round(maxPoss * 100) / 100;
+            state.remainingCost = Math.max(0, Math.round((state.remainingCost - alloc) * 100) / 100);
+            state.appliedSavings += alloc;
+            recSav += alloc;
+          } else {
+            const comp = Math.round(state.remainingCost * discountRatio * 100) / 100;
+            const finalSav = Math.min(state.remainingCost, comp);
+            state.remainingCost = Math.max(0, Math.round((state.remainingCost - finalSav) * 100) / 100);
+            state.appliedSavings += finalSav;
+            recSav += finalSav;
+          }
+        }
+        recSav = Math.round(Math.min(rec.estimatedMonthlySavings, recSav) * 100) / 100;
+        simTotal += recSav;
+      }
+      return { totalSavings: Math.round(simTotal * 100) / 100 };
+    }
+
+    // Partition architectural recommendations into conflict components and find optimal subset
+    function selectOptimalArchitecturalRecs(
+      recs: CostOptimizationRecommendation[],
+    ): CostOptimizationRecommendation[] {
+      if (recs.length <= 1) return recs;
+
+      const sorted = [...recs].sort((a, b) => {
+        const achA = estimateArchitecturalAchievable(a);
+        const achB = estimateArchitecturalAchievable(b);
+        if (Math.abs(achB - achA) > 0.001) return achB - achA;
+        if (b.estimatedMonthlySavings !== a.estimatedMonthlySavings) {
+          return b.estimatedMonthlySavings - a.estimatedMonthlySavings;
+        }
+        return a.recommendationId.localeCompare(b.recommendationId);
+      });
+
+      const visited = new Set<string>();
+      const components: CostOptimizationRecommendation[][] = [];
+
+      for (const rec of sorted) {
+        if (visited.has(rec.recommendationId)) continue;
+        const component: CostOptimizationRecommendation[] = [];
+        const queue = [rec];
+        visited.add(rec.recommendationId);
+
+        while (queue.length > 0) {
+          const curr = queue.shift()!;
+          component.push(curr);
+
+          for (const other of sorted) {
+            if (!visited.has(other.recommendationId)) {
+              if (architecturalRecsConflict(curr, other).hasConflict) {
+                visited.add(other.recommendationId);
+                queue.push(other);
+              }
+            }
+          }
+        }
+        components.push(component);
+      }
+
+      const optimalRecs: CostOptimizationRecommendation[] = [];
+
+      for (const comp of components) {
+        if (comp.length === 1) {
+          optimalRecs.push(comp[0]);
+          continue;
+        }
+
+        // Safe complexity limit: 15
+        if (comp.length > 15) {
+          const greedySelected: CostOptimizationRecommendation[] = [];
+          for (const cand of comp) {
+            let conflicts = false;
+            for (const sel of greedySelected) {
+              if (architecturalRecsConflict(cand, sel).hasConflict) {
+                conflicts = true;
+                break;
+              }
+            }
+            if (!conflicts) greedySelected.push(cand);
+          }
+          optimalRecs.push(...greedySelected);
+          continue;
+        }
+
+        // Branch-and-bound search over component
+        let bestSubset: CostOptimizationRecommendation[] = [];
+        let bestSavings = -1;
+
+        function search(
+          idx: number,
+          currentSel: CostOptimizationRecommendation[],
+          excludedIds: Set<string>,
+        ) {
+          if (idx === comp.length) {
+            const { totalSavings } = simulateArchitecturalSubset(currentSel, resourceStates);
+            if (totalSavings > bestSavings + 0.001) {
+              bestSavings = totalSavings;
+              bestSubset = [...currentSel];
+            } else if (Math.abs(totalSavings - bestSavings) <= 0.001) {
+              if (
+                bestSubset.length === 0 ||
+                currentSel.length < bestSubset.length ||
+                (currentSel.length === bestSubset.length &&
+                  currentSel.map((r) => r.recommendationId).sort().join(',') <
+                    bestSubset.map((r) => r.recommendationId).sort().join(','))
+              ) {
+                bestSavings = totalSavings;
+                bestSubset = [...currentSel];
+              }
+            }
+            return;
+          }
+
+          const currRec = comp[idx];
+          // Branch 1: Include (if not conflicted)
+          if (!excludedIds.has(currRec.recommendationId)) {
+            const nextExcluded = new Set(excludedIds);
+            for (let j = idx + 1; j < comp.length; j++) {
+              if (architecturalRecsConflict(currRec, comp[j]).hasConflict) {
+                nextExcluded.add(comp[j].recommendationId);
+              }
+            }
+            search(idx + 1, [...currentSel, currRec], nextExcluded);
+          }
+          // Branch 2: Exclude
+          search(idx + 1, currentSel, excludedIds);
+        }
+
+        search(0, [], new Set());
+        optimalRecs.push(...bestSubset);
+      }
+
+      return optimalRecs.sort((a, b) => {
+        const achA = estimateArchitecturalAchievable(a);
+        const achB = estimateArchitecturalAchievable(b);
+        if (Math.abs(achB - achA) > 0.001) return achB - achA;
+        if (b.estimatedMonthlySavings !== a.estimatedMonthlySavings) {
+          return b.estimatedMonthlySavings - a.estimatedMonthlySavings;
+        }
+        return a.recommendationId.localeCompare(b.recommendationId);
+      });
+    }
+
+    // 1. Process Architectural Recommendations
+    const optimalArchitecturalRecs = selectOptimalArchitecturalRecs(architecturalRecs);
+    const acceptedArchIds = new Set(optimalArchitecturalRecs.map((r) => r.recommendationId));
+
+    // Record notes for architectural recommendations excluded due to conflict
+    for (const rec of architecturalRecs) {
+      if (acceptedArchIds.has(rec.recommendationId)) continue;
+      for (const accepted of optimalArchitecturalRecs) {
+        const conflict = architecturalRecsConflict(rec, accepted);
+        if (conflict.hasConflict) {
+          overlapNotes.push(
+            `Recommendation "${rec.title}" is mutually exclusive with accepted recommendation "${accepted.recommendationId}" on resource "${conflict.resId}" (both modify ${conflict.key}). Kept dominant recommendation.`,
+          );
+          break;
+        }
+      }
+    }
+
+    for (const rec of optimalArchitecturalRecs) {
+      // Cost-Weighted Resource Allocation with Fallback & Transparency warnings:
+      const { effectiveCosts, weights } = computeAllocationCosts(rec, resourceStates, true);
 
       const discountRatio =
         rec.savingsPercentage > 0
@@ -531,6 +759,19 @@ export class CostOptimizationEngine {
     }
 
     // 2. Process Pricing Model Recommendations (Savings Plans)
+    // Helper: Check if two Savings Plans conflict
+    function spRecsConflict(
+      a: CostOptimizationRecommendation,
+      b: CostOptimizationRecommendation,
+    ): { hasConflict: boolean; resId?: string } {
+      for (const resId of a.affectedResourceIds) {
+        if (b.affectedResourceIds.includes(resId)) {
+          return { hasConflict: true, resId };
+        }
+      }
+      return { hasConflict: false };
+    }
+
     // Helper: Estimate achievable savings for a Savings Plan
     function estimateSpAchievable(spRec: CostOptimizationRecommendation): number {
       let baseline = 0;
@@ -557,43 +798,202 @@ export class CostOptimizationEngine {
       return Math.round(Math.min(baseline, Math.min(spRec.estimatedMonthlySavings, nominal)) * 100) / 100;
     }
 
-    // Sort Pricing Model Recommendations by achievable savings descending,
-    // then estimatedMonthlySavings descending, then recommendationId ascending.
-    const sortedPricingModelRecs = [...pricingModelRecs].sort((a, b) => {
-      const achievableA = estimateSpAchievable(a);
-      const achievableB = estimateSpAchievable(b);
-      if (Math.abs(achievableB - achievableA) > 0.001) {
-        return achievableB - achievableA;
+    function simulateSpSubset(
+      subset: CostOptimizationRecommendation[],
+    ): { totalSavings: number } {
+      let simTotal = 0;
+      const simStates = new Map<string, ResourceState>();
+      for (const [k, v] of resourceStates.entries()) {
+        simStates.set(k, {
+          currentCost: v.currentCost,
+          remainingCost: v.remainingCost,
+          appliedSavings: v.appliedSavings,
+          modifiedAttributes: new Map(v.modifiedAttributes),
+        });
       }
-      if (b.estimatedMonthlySavings !== a.estimatedMonthlySavings) {
-        return b.estimatedMonthlySavings - a.estimatedMonthlySavings;
+
+      for (const spRec of subset) {
+        let baseline = 0;
+        const resourceCount = Math.max(1, spRec.affectedResourceIds.length);
+        const equalShareCost = (spRec.estimatedCurrentCost || 0) / resourceCount;
+
+        for (const resId of spRec.affectedResourceIds) {
+          const state = simStates.get(resId);
+          if (state) {
+            baseline += state.remainingCost;
+          } else {
+            const known = costLookup.get(resId);
+            baseline += known !== undefined ? known : equalShareCost;
+          }
+        }
+        baseline = Math.round(baseline * 100) / 100;
+
+        let pct = 0;
+        if (typeof spRec.savingsPercentage === 'number' && !isNaN(spRec.savingsPercentage)) {
+          if (spRec.savingsPercentage >= 0 && spRec.savingsPercentage <= 100) {
+            pct = spRec.savingsPercentage;
+          }
+        }
+        const nominal = Math.round(baseline * (pct / 100) * 100) / 100;
+        const planSav = Math.min(baseline, nominal);
+
+        for (const resId of spRec.affectedResourceIds) {
+          const state = simStates.get(resId);
+          if (state) {
+            const share = planSav / resourceCount;
+            state.remainingCost = Math.max(0, Math.round((state.remainingCost - share) * 100) / 100);
+          }
+        }
+        simTotal += planSav;
       }
-      return a.recommendationId.localeCompare(b.recommendationId);
-    });
+      return { totalSavings: Math.round(simTotal * 100) / 100 };
+    }
 
-    const committedResources = new Map<string, string>();
+    // Partition Savings Plans into conflict components and find optimal subset
+    function selectOptimalSpRecs(
+      recs: CostOptimizationRecommendation[],
+    ): CostOptimizationRecommendation[] {
+      if (recs.length <= 1) return recs;
 
-    for (const spRec of sortedPricingModelRecs) {
-      let hasConflict = false;
-      let conflictPlanTitle = '';
-      let conflictingRes = '';
+      const sorted = [...recs].sort((a, b) => {
+        const achA = estimateSpAchievable(a);
+        const achB = estimateSpAchievable(b);
+        if (Math.abs(achB - achA) > 0.001) return achB - achA;
+        if (b.estimatedMonthlySavings !== a.estimatedMonthlySavings) {
+          return b.estimatedMonthlySavings - a.estimatedMonthlySavings;
+        }
+        return a.recommendationId.localeCompare(b.recommendationId);
+      });
 
-      for (const resId of spRec.affectedResourceIds) {
-        if (committedResources.has(resId)) {
-          hasConflict = true;
-          conflictingRes = resId;
-          conflictPlanTitle = committedResources.get(resId)!;
+      const visited = new Set<string>();
+      const components: CostOptimizationRecommendation[][] = [];
+
+      for (const rec of sorted) {
+        if (visited.has(rec.recommendationId)) continue;
+        const component: CostOptimizationRecommendation[] = [];
+        const queue = [rec];
+        visited.add(rec.recommendationId);
+
+        while (queue.length > 0) {
+          const curr = queue.shift()!;
+          component.push(curr);
+
+          for (const other of sorted) {
+            if (!visited.has(other.recommendationId)) {
+              if (spRecsConflict(curr, other).hasConflict) {
+                visited.add(other.recommendationId);
+                queue.push(other);
+              }
+            }
+          }
+        }
+        components.push(component);
+      }
+
+      const optimalRecs: CostOptimizationRecommendation[] = [];
+
+      for (const comp of components) {
+        if (comp.length === 1) {
+          optimalRecs.push(comp[0]);
+          continue;
+        }
+
+        // Safe complexity limit: 15
+        if (comp.length > 15) {
+          const greedySelected: CostOptimizationRecommendation[] = [];
+          for (const cand of comp) {
+            let conflicts = false;
+            for (const sel of greedySelected) {
+              if (spRecsConflict(cand, sel).hasConflict) {
+                conflicts = true;
+                break;
+              }
+            }
+            if (!conflicts) greedySelected.push(cand);
+          }
+          optimalRecs.push(...greedySelected);
+          continue;
+        }
+
+        // Branch-and-bound search over component
+        let bestSubset: CostOptimizationRecommendation[] = [];
+        let bestSavings = -1;
+
+        function search(
+          idx: number,
+          currentSel: CostOptimizationRecommendation[],
+          excludedIds: Set<string>,
+        ) {
+          if (idx === comp.length) {
+            const { totalSavings } = simulateSpSubset(currentSel);
+            if (totalSavings > bestSavings + 0.001) {
+              bestSavings = totalSavings;
+              bestSubset = [...currentSel];
+            } else if (Math.abs(totalSavings - bestSavings) <= 0.001) {
+              if (
+                bestSubset.length === 0 ||
+                currentSel.length < bestSubset.length ||
+                (currentSel.length === bestSubset.length &&
+                  currentSel.map((r) => r.recommendationId).sort().join(',') <
+                    bestSubset.map((r) => r.recommendationId).sort().join(','))
+              ) {
+                bestSavings = totalSavings;
+                bestSubset = [...currentSel];
+              }
+            }
+            return;
+          }
+
+          const currRec = comp[idx];
+          // Branch 1: Include (if not conflicted)
+          if (!excludedIds.has(currRec.recommendationId)) {
+            const nextExcluded = new Set(excludedIds);
+            for (let j = idx + 1; j < comp.length; j++) {
+              if (spRecsConflict(currRec, comp[j]).hasConflict) {
+                nextExcluded.add(comp[j].recommendationId);
+              }
+            }
+            search(idx + 1, [...currentSel, currRec], nextExcluded);
+          }
+          // Branch 2: Exclude
+          search(idx + 1, currentSel, excludedIds);
+        }
+
+        search(0, [], new Set());
+        optimalRecs.push(...bestSubset);
+      }
+
+      return optimalRecs.sort((a, b) => {
+        const achA = estimateSpAchievable(a);
+        const achB = estimateSpAchievable(b);
+        if (Math.abs(achB - achA) > 0.001) return achB - achA;
+        if (b.estimatedMonthlySavings !== a.estimatedMonthlySavings) {
+          return b.estimatedMonthlySavings - a.estimatedMonthlySavings;
+        }
+        return a.recommendationId.localeCompare(b.recommendationId);
+      });
+    }
+
+    const optimalSpRecs = selectOptimalSpRecs(pricingModelRecs);
+    const acceptedSpIds = new Set(optimalSpRecs.map((r) => r.recommendationId));
+
+    // Record notes for excluded Savings Plans
+    for (const rec of pricingModelRecs) {
+      if (acceptedSpIds.has(rec.recommendationId)) continue;
+      for (const accepted of optimalSpRecs) {
+        const conflict = spRecsConflict(rec, accepted);
+        if (conflict.hasConflict) {
+          overlapNotes.push(
+            `Pricing model recommendation "${rec.title}" overlaps with applied commitment plan "${accepted.title}" on resource "${conflict.resId}". Excluded to avoid multiple commitment plans on the same compute baseline.`,
+          );
           break;
         }
       }
+    }
 
-      if (hasConflict) {
-        overlapNotes.push(
-          `Pricing model recommendation "${spRec.title}" overlaps with applied commitment plan "${conflictPlanTitle}" on resource "${conflictingRes}". Excluded to avoid multiple commitment plans on the same compute baseline.`,
-        );
-        continue;
-      }
+    const committedResources = new Map<string, string>();
 
+    for (const spRec of optimalSpRecs) {
       // Calculate eligible compute baseline using ONLY the plan's affected resources
       let planEligibleBaseline = 0;
       let hadPriorArchitecturalReductions = false;
