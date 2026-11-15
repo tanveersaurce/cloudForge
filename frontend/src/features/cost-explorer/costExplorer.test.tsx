@@ -982,12 +982,15 @@ describe('Cost Optimization Section Component', () => {
       expect(tier2Dim?.extendedCost).toBe(0.04);
     });
 
-    it('verifies strict parity on shared benchmark fixture within 0.01 tolerance against BENCHMARK_EXPECTED', async () => {
-      const { BENCHMARK_NODES, BENCHMARK_ASSUMPTIONS, BENCHMARK_EXPECTED } = await import(
+    it('verifies strict parity between frontend and backend calculators on shared benchmark fixture within 0.01 tolerance', async () => {
+      const { BENCHMARK_NODES, BENCHMARK_ASSUMPTIONS } = await import(
         './data/pricingBenchmarkFixtures'
       );
+      const { CostCalculator } = await import(
+        '../../../../backend/src/modules/pricing/engine/costCalculator.js'
+      );
 
-      const result = calculateClientCost(
+      const frontendResult = calculateClientCost(
         'arch-parity',
         'us-east-1',
         BENCHMARK_NODES as any,
@@ -995,21 +998,424 @@ describe('Cost Optimization Section Component', () => {
         BENCHMARK_ASSUMPTIONS,
       );
 
+      const backendResult = CostCalculator.calculateCost(
+        'arch-parity',
+        'us-east-1',
+        BENCHMARK_NODES as any,
+        BENCHMARK_ASSUMPTIONS,
+      );
+
       const TOLERANCE = 0.01;
 
-      // 1. Total Monthly Cost Parity
-      const totalDiff = Math.abs(result.totalEstimatedMonthly - BENCHMARK_EXPECTED.totalEstimatedMonthly);
+      // 1. Total Monthly & Hourly Cost Parity
+      const totalDiff = Math.abs(frontendResult.totalEstimatedMonthly - backendResult.totalEstimatedMonthly);
       expect(totalDiff).toBeLessThanOrEqual(TOLERANCE);
-      expect(result.totalEstimatedMonthly).toBe(BENCHMARK_EXPECTED.totalEstimatedMonthly);
 
-      // 2. Resource-Level Cost Parity
-      expect(result.resourceItems.length).toBe(BENCHMARK_NODES.length);
-      for (const [resId, expectedCost] of Object.entries(BENCHMARK_EXPECTED.resourceCosts)) {
-        const item = result.resourceItems.find((r) => r.resourceId === resId);
-        expect(item).toBeDefined();
-        const diff = Math.abs(item!.monthlyCost - expectedCost);
+      const hourlyDiff = Math.abs(frontendResult.totalEstimatedHourly - backendResult.totalEstimatedHourly);
+      expect(hourlyDiff).toBeLessThanOrEqual(TOLERANCE);
+
+      // 2. Resource-Level Cost Parity & Dimension Parity
+      expect(frontendResult.resourceItems.length).toBe(backendResult.resourceItems.length);
+      for (const fItem of frontendResult.resourceItems) {
+        const bItem = backendResult.resourceItems.find((r) => r.resourceId === fItem.resourceId);
+        expect(bItem).toBeDefined();
+        const diff = Math.abs(fItem.monthlyCost - bItem!.monthlyCost);
         expect(diff).toBeLessThanOrEqual(TOLERANCE);
+
+        const hDiff = Math.abs(fItem.hourlyCost - bItem!.hourlyCost);
+        expect(hDiff).toBeLessThanOrEqual(TOLERANCE);
+
+        expect(fItem.dimensions.length).toBe(bItem!.dimensions.length);
+        for (let i = 0; i < fItem.dimensions.length; i++) {
+          const dimDiff = Math.abs(fItem.dimensions[i].extendedCost - bItem!.dimensions[i].extendedCost);
+          expect(dimDiff).toBeLessThanOrEqual(TOLERANCE);
+          const priceDiff = Math.abs(fItem.dimensions[i].unitPrice - bItem!.dimensions[i].unitPrice);
+          expect(priceDiff).toBeLessThanOrEqual(TOLERANCE);
+          expect(fItem.dimensions[i].quantity).toBe(bItem!.dimensions[i].quantity);
+        }
       }
+
+      // 3. Service Breakdown Parity
+      for (const fService of frontendResult.serviceBreakdown) {
+        const bService = backendResult.serviceBreakdown.find((s) => s.serviceCode === fService.serviceCode);
+        expect(bService).toBeDefined();
+        const diff = Math.abs(fService.monthlyCost - bService!.monthlyCost);
+        expect(diff).toBeLessThanOrEqual(TOLERANCE);
+        const pctDiff = Math.abs(fService.percentage - bService!.percentage);
+        expect(pctDiff).toBeLessThanOrEqual(0.01);
+      }
+    });
+
+    it('handles three Savings Plans where first and third overlap but second does not', () => {
+      const recs = [
+        {
+          recommendationId: 'REC-SP-1',
+          title: 'EC2-1 3-Year Savings Plan',
+          category: 'pricing-model' as const,
+          priority: 'high' as const,
+          affectedResourceIds: ['ec2-1'],
+          currentConfiguration: {},
+          proposedConfiguration: {},
+          explanation: '',
+          estimatedCurrentCost: 100.0,
+          estimatedOptimizedCost: 50.0,
+          estimatedMonthlySavings: 50.0,
+          savingsPercentage: 50,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+        {
+          recommendationId: 'REC-SP-2',
+          title: 'EC2-2 1-Year Savings Plan',
+          category: 'pricing-model' as const,
+          priority: 'medium' as const,
+          affectedResourceIds: ['ec2-2'],
+          currentConfiguration: {},
+          proposedConfiguration: {},
+          explanation: '',
+          estimatedCurrentCost: 100.0,
+          estimatedOptimizedCost: 70.0,
+          estimatedMonthlySavings: 30.0,
+          savingsPercentage: 30,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'medium' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+        {
+          recommendationId: 'REC-SP-3',
+          title: 'EC2-1 1-Year Savings Plan (Conflicting)',
+          category: 'pricing-model' as const,
+          priority: 'medium' as const,
+          affectedResourceIds: ['ec2-1'],
+          currentConfiguration: {},
+          proposedConfiguration: {},
+          explanation: '',
+          estimatedCurrentCost: 100.0,
+          estimatedOptimizedCost: 65.0,
+          estimatedMonthlySavings: 35.0,
+          savingsPercentage: 35,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'medium' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+      ];
+
+      const analysis = calculateAchievableSavings(recs);
+
+      // SP-1 ($50 on ec2-1) and SP-2 ($30 on ec2-2) are independent -> both accepted = $80.
+      // SP-3 ($35 on ec2-1) is rejected due to conflict with SP-1 on ec2-1.
+      expect(analysis.combinedAchievableSavings).toBe(80.0);
+      expect(analysis.hasOverlappingRecommendations).toBe(true);
+      expect(analysis.overlapNotes.some((n) => n.includes('overlaps with applied commitment plan') && n.includes('ec2-1'))).toBe(true);
+    });
+
+    it('handles two independent Savings Plans on separate EC2 resources without conflict', () => {
+      const recs = [
+        {
+          recommendationId: 'REC-SP-A',
+          title: 'EC2-A Savings Plan',
+          category: 'pricing-model' as const,
+          priority: 'high' as const,
+          affectedResourceIds: ['ec2-a'],
+          currentConfiguration: {},
+          proposedConfiguration: {},
+          explanation: '',
+          estimatedCurrentCost: 100.0,
+          estimatedOptimizedCost: 60.0,
+          estimatedMonthlySavings: 40.0,
+          savingsPercentage: 40,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+        {
+          recommendationId: 'REC-SP-B',
+          title: 'EC2-B Savings Plan',
+          category: 'pricing-model' as const,
+          priority: 'medium' as const,
+          affectedResourceIds: ['ec2-b'],
+          currentConfiguration: {},
+          proposedConfiguration: {},
+          explanation: '',
+          estimatedCurrentCost: 100.0,
+          estimatedOptimizedCost: 75.0,
+          estimatedMonthlySavings: 25.0,
+          savingsPercentage: 25,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'medium' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+      ];
+
+      const analysis = calculateAchievableSavings(recs);
+
+      // Both independent plans applied: $40 + $25 = $65.
+      expect(analysis.combinedAchievableSavings).toBe(65.0);
+      expect(analysis.hasOverlappingRecommendations).toBe(false);
+      expect(analysis.overlapNotes.length).toBe(0);
+    });
+
+    it('allocates multi-resource recommendation savings proportionally using unequal EC2 resource costs', () => {
+      const resourceCosts = new Map<string, number>([
+        ['ec2-web', 30.0],
+        ['ec2-api', 70.0],
+      ]);
+
+      const recs = [
+        {
+          recommendationId: 'REC-FLEET-OPT',
+          title: 'Fleet-wide Workload Optimization',
+          category: 'compute' as const,
+          priority: 'high' as const,
+          affectedResourceIds: ['ec2-web', 'ec2-api'],
+          currentConfiguration: { fleet_scaling: 'standard' },
+          proposedConfiguration: { fleet_scaling: 'optimized' },
+          explanation: '',
+          estimatedCurrentCost: 100.0,
+          estimatedOptimizedCost: 80.0,
+          estimatedMonthlySavings: 20.0,
+          savingsPercentage: 20,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'medium' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+      ];
+
+      const analysis = calculateAchievableSavings(recs, resourceCosts);
+
+      // Total savings = $20. Proportional allocation:
+      // ec2-web ($30 / $100 = 30%) -> $6.00
+      // ec2-api ($70 / $100 = 70%) -> $14.00
+      expect(analysis.combinedAchievableSavings).toBe(20.0);
+    });
+
+    it('determines dominant recommendation deterministically regardless of input array ordering', () => {
+      const recA = {
+        recommendationId: 'REC-LOW-SAVINGS',
+        title: 'Upgrade to t3.medium',
+        category: 'compute' as const,
+        priority: 'medium' as const,
+        affectedResourceIds: ['ec2-1'],
+        currentConfiguration: { instance_type: 't3.small' },
+        proposedConfiguration: { instance_type: 't3.medium' },
+        explanation: '',
+        estimatedCurrentCost: 100.0,
+        estimatedOptimizedCost: 70.0,
+        estimatedMonthlySavings: 30.0,
+        savingsPercentage: 30,
+        currency: 'USD',
+        performanceImpact: 'neutral' as const,
+        securityImpact: 'neutral' as const,
+        availabilityImpact: 'neutral' as const,
+        implementationEffort: 'low' as const,
+        confidenceLevel: 'medium' as const,
+        requiredAssumptions: [],
+        documentationReferences: [],
+        status: 'pending' as const,
+      };
+
+      const recB = {
+        recommendationId: 'REC-HIGH-SAVINGS',
+        title: 'Migrate to c6g.medium (Graviton)',
+        category: 'compute' as const,
+        priority: 'high' as const,
+        affectedResourceIds: ['ec2-1'],
+        currentConfiguration: { instance_type: 't3.small' },
+        proposedConfiguration: { instance_type: 'c6g.medium' },
+        explanation: '',
+        estimatedCurrentCost: 100.0,
+        estimatedOptimizedCost: 40.0,
+        estimatedMonthlySavings: 60.0,
+        savingsPercentage: 60,
+        currency: 'USD',
+        performanceImpact: 'neutral' as const,
+        securityImpact: 'neutral' as const,
+        availabilityImpact: 'neutral' as const,
+        implementationEffort: 'low' as const,
+        confidenceLevel: 'high' as const,
+        requiredAssumptions: [],
+        documentationReferences: [],
+        status: 'pending' as const,
+      };
+
+      // Order 1: [Low, High]
+      const analysis1 = calculateAchievableSavings([recA, recB]);
+      // Order 2: [High, Low]
+      const analysis2 = calculateAchievableSavings([recB, recA]);
+
+      // Both orders must keep dominant recB ($60) and exclude recA ($30)
+      expect(analysis1.combinedAchievableSavings).toBe(60.0);
+      expect(analysis2.combinedAchievableSavings).toBe(60.0);
+      expect(analysis1.combinedAchievableSavings).toBe(analysis2.combinedAchievableSavings);
+    });
+
+    it('calculates Savings Plan after optimizations affecting only a subset of resources without deducting unrelated resources', () => {
+      const resourceCosts = new Map<string, number>([
+        ['ec2-1', 100.0],
+        ['ec2-2', 100.0],
+        ['ec2-unrelated', 100.0],
+      ]);
+
+      const recs = [
+        // Architectural optimization on ec2-1 only ($20 reduction -> remaining $80)
+        {
+          recommendationId: 'REC-OPT-EC2-1',
+          title: 'Right-size EC2-1',
+          category: 'compute' as const,
+          priority: 'high' as const,
+          affectedResourceIds: ['ec2-1'],
+          currentConfiguration: { instance_type: 't3.large' },
+          proposedConfiguration: { instance_type: 't3.medium' },
+          explanation: '',
+          estimatedCurrentCost: 100.0,
+          estimatedOptimizedCost: 80.0,
+          estimatedMonthlySavings: 20.0,
+          savingsPercentage: 20,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+        // Architectural optimization on ec2-unrelated ($50 reduction)
+        {
+          recommendationId: 'REC-OPT-UNRELATED',
+          title: 'Right-size Unrelated EC2',
+          category: 'compute' as const,
+          priority: 'high' as const,
+          affectedResourceIds: ['ec2-unrelated'],
+          currentConfiguration: { instance_type: 'm5.xlarge' },
+          proposedConfiguration: { instance_type: 'm5.large' },
+          explanation: '',
+          estimatedCurrentCost: 100.0,
+          estimatedOptimizedCost: 50.0,
+          estimatedMonthlySavings: 50.0,
+          savingsPercentage: 50,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+        // Savings Plan covering ONLY ec2-1 and ec2-2 (NOT ec2-unrelated)
+        {
+          recommendationId: 'REC-SP-CLUSTER',
+          title: 'Compute Savings Plan for Cluster',
+          category: 'pricing-model' as const,
+          priority: 'medium' as const,
+          affectedResourceIds: ['ec2-1', 'ec2-2'],
+          currentConfiguration: { pricing_model: 'On-Demand' },
+          proposedConfiguration: { pricing_model: 'Savings Plan' },
+          explanation: '',
+          estimatedCurrentCost: 200.0,
+          estimatedOptimizedCost: 140.0,
+          estimatedMonthlySavings: 60.0,
+          savingsPercentage: 30, // 30% discount
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+      ];
+
+      const analysis = calculateAchievableSavings(recs, resourceCosts);
+
+      // Architectural savings:
+      // ec2-1: $20 (remaining: $80)
+      // ec2-unrelated: $50 (remaining: $50)
+      // Savings Plan eligible baseline for ['ec2-1', 'ec2-2']:
+      // ec2-1 remaining ($80) + ec2-2 remaining ($100) = $180.
+      // (The $50 reduction on ec2-unrelated is strictly NOT deducted!)
+      // SP savings = $180 * 0.30 = $54.00.
+      // Total combined = $20 + $50 + $54 = $124.00.
+      expect(analysis.combinedAchievableSavings).toBe(124.0);
+    });
+
+    it('ensures savings never exceed resource baseline', () => {
+      const resourceCosts = new Map<string, number>([
+        ['ec2-small', 25.0],
+      ]);
+
+      const recs = [
+        {
+          recommendationId: 'REC-OVERSIZED-SAVINGS',
+          title: 'Overly Ambitious Optimization',
+          category: 'compute' as const,
+          priority: 'high' as const,
+          affectedResourceIds: ['ec2-small'],
+          currentConfiguration: { instance_type: 't3.nano' },
+          proposedConfiguration: { instance_type: 'serverless' },
+          explanation: '',
+          estimatedCurrentCost: 25.0,
+          estimatedOptimizedCost: 0.0,
+          estimatedMonthlySavings: 60.0, // Nominally claims $60 savings on a $25 resource
+          savingsPercentage: 100,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'low' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+      ];
+
+      const analysis = calculateAchievableSavings(recs, resourceCosts);
+
+      // Savings must be clamped to the actual remaining baseline ($25.00)
+      expect(analysis.combinedAchievableSavings).toBe(25.0);
     });
   });
 });

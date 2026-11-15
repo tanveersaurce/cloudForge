@@ -240,7 +240,11 @@ export class PricingService {
       costResult,
     );
 
-    const savingsAnalysis = CostOptimizationEngine.calculateAchievableSavings(recommendations);
+    const resourceCostMap = new Map<string, number>();
+    for (const item of costResult.resourceItems) {
+      resourceCostMap.set(item.resourceId, item.monthlyCost);
+    }
+    const savingsAnalysis = CostOptimizationEngine.calculateAchievableSavings(recommendations, resourceCostMap);
 
     const fullResult: CostEstimationResult = {
       ...costResult,
