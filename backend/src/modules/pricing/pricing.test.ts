@@ -289,8 +289,8 @@ describe('AWS Cost Estimation Engine & Intelligent Optimization (Phase 08)', () 
       expect(ec2Item?.monthlyCost).toBe(32.77);
       expect(rdsItem?.monthlyCost).toBe(122.28);
       expect(natItem?.monthlyCost).toBe(35.1);
-      expect(s3Item?.monthlyCost).toBe(1.4);
-      expect(result.totalEstimatedMonthly).toBe(191.55);
+      expect(s3Item?.monthlyCost).toBe(1.22);
+      expect(result.totalEstimatedMonthly).toBe(191.37);
     });
   });
 
@@ -617,7 +617,7 @@ describe('AWS Cost Estimation Engine & Intelligent Optimization (Phase 08)', () 
       expect(analysis.individualSavingsSum).toBe(7.0);
       expect(analysis.combinedAchievableSavings).toBe(6.0); // NOT dropped to 5.0, NOT double-counted to 7.0
       expect(analysis.hasOverlappingRecommendations).toBe(true);
-      expect(analysis.overlapNotes.some((n) => n.includes('compounded savings'))).toBe(true);
+      expect(analysis.overlapNotes.some((n) => n.includes('compounding'))).toBe(true);
     });
 
     it('adjusts Savings Plans to baseline after architectural compute reductions', () => {
@@ -679,6 +679,415 @@ describe('AWS Cost Estimation Engine & Intelligent Optimization (Phase 08)', () 
       expect(analysis.combinedAchievableSavings).toBe(33.54);
       expect(analysis.hasOverlappingRecommendations).toBe(true);
       expect(analysis.overlapNotes.some((n) => n.includes('Savings Plan recommendation adjusted'))).toBe(true);
+    });
+
+    it('allocates multi-resource recommendation savings proportionally without multiplying', () => {
+      const rec = {
+        recommendationId: 'REC-MULTI-NAT',
+        title: 'Bypass NAT Gateways for S3',
+        category: 'networking' as const,
+        priority: 'high' as const,
+        affectedResourceIds: ['nat-1', 'nat-2'],
+        currentConfiguration: { s3_routing: 'NAT' },
+        proposedConfiguration: { s3_routing: 'Gateway Endpoint' },
+        explanation: 'Multi-resource gateway endpoint',
+        estimatedCurrentCost: 90.0,
+        estimatedOptimizedCost: 45.0,
+        estimatedMonthlySavings: 45.0, // Total savings across both NATs
+        savingsPercentage: 50,
+        currency: 'USD',
+        performanceImpact: 'improved' as const,
+        securityImpact: 'neutral' as const,
+        availabilityImpact: 'neutral' as const,
+        implementationEffort: 'low' as const,
+        confidenceLevel: 'high' as const,
+        requiredAssumptions: [],
+        documentationReferences: [],
+        status: 'pending' as const,
+      };
+
+      const analysis = CostOptimizationEngine.calculateAchievableSavings([rec]);
+
+      // Total savings must equal 45.00, NOT 45 * 2 = 90.00!
+      expect(analysis.individualSavingsSum).toBe(45.0);
+      expect(analysis.combinedAchievableSavings).toBe(45.0);
+    });
+
+    it('compounds multiple compatible recommendations across multiple resources at the resource level', () => {
+      const recs = [
+        {
+          recommendationId: 'REC-MULTI-GRAVITON',
+          title: 'Graviton on EC2 Cluster',
+          category: 'compute' as const,
+          priority: 'high' as const,
+          affectedResourceIds: ['ec2-1', 'ec2-2'],
+          currentConfiguration: { instance_type: 't3.medium' },
+          proposedConfiguration: { instance_type: 't4g.medium' },
+          explanation: '',
+          estimatedCurrentCost: 100.0, // $50 each
+          estimatedOptimizedCost: 80.0, // $40 each
+          estimatedMonthlySavings: 20.0, // $10 each (20%)
+          savingsPercentage: 20,
+          currency: 'USD',
+          performanceImpact: 'improved' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+        {
+          recommendationId: 'REC-MULTI-SCHEDULE',
+          title: 'Weekend Auto-Shutdown Schedule',
+          category: 'compute' as const,
+          priority: 'medium' as const,
+          affectedResourceIds: ['ec2-1', 'ec2-2'],
+          currentConfiguration: { schedule: '24x7' },
+          proposedConfiguration: { schedule: 'business-hours' },
+          explanation: '',
+          estimatedCurrentCost: 100.0,
+          estimatedOptimizedCost: 70.0,
+          estimatedMonthlySavings: 30.0, // 30% reduction
+          savingsPercentage: 30,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+      ];
+
+      const analysis = CostOptimizationEngine.calculateAchievableSavings(recs);
+
+      // Rec 1: $10 saved per instance ($20 total). Remaining cost per instance: $40.
+      // Rec 2: 30% discount compounded on $40 remaining = $12 saved per instance ($24 total).
+      // Combined savings = $20 + $24 = $44.00 (individual sum = $50.00).
+      expect(analysis.individualSavingsSum).toBe(50.0);
+      expect(analysis.combinedAchievableSavings).toBe(44.0);
+      expect(analysis.hasOverlappingRecommendations).toBe(true);
+    });
+
+    it('rejects conflicting recommendations across multiple resources', () => {
+      const recs = [
+        {
+          recommendationId: 'REC-GRAVITON',
+          title: 'Upgrade to Graviton',
+          category: 'compute' as const,
+          priority: 'high' as const,
+          affectedResourceIds: ['ec2-1', 'ec2-2'],
+          currentConfiguration: { instance_type: 't3.medium' },
+          proposedConfiguration: { instance_type: 't4g.medium' },
+          explanation: '',
+          estimatedCurrentCost: 60.0,
+          estimatedOptimizedCost: 48.0,
+          estimatedMonthlySavings: 12.0,
+          savingsPercentage: 20,
+          currency: 'USD',
+          performanceImpact: 'improved' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+        {
+          recommendationId: 'REC-AMD',
+          title: 'Switch to AMD',
+          category: 'compute' as const,
+          priority: 'medium' as const,
+          affectedResourceIds: ['ec2-1', 'ec2-3'], // Overlaps on ec2-1
+          currentConfiguration: { instance_type: 't3.medium' },
+          proposedConfiguration: { instance_type: 't3a.medium' },
+          explanation: '',
+          estimatedCurrentCost: 60.0,
+          estimatedOptimizedCost: 54.0,
+          estimatedMonthlySavings: 6.0,
+          savingsPercentage: 10,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+      ];
+
+      const analysis = CostOptimizationEngine.calculateAchievableSavings(recs);
+
+      // Conflict on ec2-1 -> REC-AMD is excluded
+      expect(analysis.combinedAchievableSavings).toBe(12.0);
+      expect(analysis.hasOverlappingRecommendations).toBe(true);
+      expect(analysis.overlapNotes.some((n) => n.includes('mutually exclusive'))).toBe(true);
+    });
+
+    it('deducts architectural compute savings exactly once across multiple EC2 instances before Savings Plans', () => {
+      const recs = [
+        {
+          recommendationId: 'REC-EC2-1',
+          title: 'Graviton Web',
+          category: 'compute' as const,
+          priority: 'high' as const,
+          affectedResourceIds: ['ec2-1'],
+          currentConfiguration: { instance_type: 't3.medium' },
+          proposedConfiguration: { instance_type: 't4g.medium' },
+          explanation: '',
+          estimatedCurrentCost: 30.0,
+          estimatedOptimizedCost: 20.0,
+          estimatedMonthlySavings: 10.0,
+          savingsPercentage: 33.3,
+          currency: 'USD',
+          performanceImpact: 'improved' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+        {
+          recommendationId: 'REC-EC2-2',
+          title: 'Graviton API',
+          category: 'compute' as const,
+          priority: 'high' as const,
+          affectedResourceIds: ['ec2-2'],
+          currentConfiguration: { instance_type: 'm5.large' },
+          proposedConfiguration: { instance_type: 'm6g.large' },
+          explanation: '',
+          estimatedCurrentCost: 70.0,
+          estimatedOptimizedCost: 55.0,
+          estimatedMonthlySavings: 15.0,
+          savingsPercentage: 21.4,
+          currency: 'USD',
+          performanceImpact: 'improved' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+        {
+          recommendationId: 'REC-SP',
+          title: 'Compute Savings Plan',
+          category: 'pricing-model' as const,
+          priority: 'medium' as const,
+          affectedResourceIds: ['ec2-1', 'ec2-2'],
+          currentConfiguration: { pricing_model: 'On-Demand' },
+          proposedConfiguration: { pricing_model: 'Savings Plan' },
+          explanation: '',
+          estimatedCurrentCost: 100.0, // Total compute spend
+          estimatedOptimizedCost: 65.0,
+          estimatedMonthlySavings: 35.0, // 35% of 100
+          savingsPercentage: 35,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'medium' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+      ];
+
+      const analysis = CostOptimizationEngine.calculateAchievableSavings(recs);
+
+      // Architectural compute reductions: $10 + $15 = $25 (deducted exactly once!).
+      // Remaining eligible baseline: $100 - $25 = $75.
+      // Adjusted Savings Plan: $75 * 0.35 = $26.25.
+      // Combined savings = $25 + $26.25 = $51.25.
+      expect(analysis.combinedAchievableSavings).toBe(51.25);
+    });
+
+    it('handles multiple Savings Plan recommendations by picking dominant commitment plan', () => {
+      const recs = [
+        {
+          recommendationId: 'REC-SP-3YR',
+          title: '3-Year Compute Savings Plan',
+          category: 'pricing-model' as const,
+          priority: 'high' as const,
+          affectedResourceIds: ['ec2-1'],
+          currentConfiguration: { pricing_model: 'On-Demand' },
+          proposedConfiguration: { pricing_model: '3-Year SP' },
+          explanation: '',
+          estimatedCurrentCost: 100.0,
+          estimatedOptimizedCost: 50.0,
+          estimatedMonthlySavings: 50.0,
+          savingsPercentage: 50,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+        {
+          recommendationId: 'REC-SP-1YR',
+          title: '1-Year Compute Savings Plan',
+          category: 'pricing-model' as const,
+          priority: 'medium' as const,
+          affectedResourceIds: ['ec2-1'],
+          currentConfiguration: { pricing_model: 'On-Demand' },
+          proposedConfiguration: { pricing_model: '1-Year SP' },
+          explanation: '',
+          estimatedCurrentCost: 100.0,
+          estimatedOptimizedCost: 65.0,
+          estimatedMonthlySavings: 35.0,
+          savingsPercentage: 35,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'medium' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+      ];
+
+      const analysis = CostOptimizationEngine.calculateAchievableSavings(recs);
+
+      // Only the dominant 3-Year plan ($50) is applied, 1-Year plan excluded to avoid double commitment
+      expect(analysis.combinedAchievableSavings).toBe(50.0);
+      expect(analysis.overlapNotes.some((n) => n.includes('overlaps with applied commitment plan'))).toBe(true);
+    });
+
+    it('safely handles zero-cost and missing-cost resources without throwing or NaN', () => {
+      const rec = {
+        recommendationId: 'REC-FREE-IAM',
+        title: 'Delete Unused Role',
+        category: 'compute' as const,
+        priority: 'low' as const,
+        affectedResourceIds: ['iam-role-1'],
+        currentConfiguration: {},
+        proposedConfiguration: {},
+        explanation: '',
+        estimatedCurrentCost: 0.0,
+        estimatedOptimizedCost: 0.0,
+        estimatedMonthlySavings: 0.0,
+        savingsPercentage: 0,
+        currency: 'USD',
+        performanceImpact: 'neutral' as const,
+        securityImpact: 'neutral' as const,
+        availabilityImpact: 'neutral' as const,
+        implementationEffort: 'low' as const,
+        confidenceLevel: 'low' as const,
+        requiredAssumptions: [],
+        documentationReferences: [],
+        status: 'pending' as const,
+      };
+
+      const analysis = CostOptimizationEngine.calculateAchievableSavings([rec]);
+      expect(analysis.combinedAchievableSavings).toBe(0.0);
+      expect(isNaN(analysis.combinedAchievableSavings)).toBe(false);
+    });
+
+    it('separates S3 Tier 1 (PUT/COPY/POST/LIST) and Tier 2 (GET/SELECT) request dimensions accurately', () => {
+      const assumptions = {
+        ...getDefaultAssumptions(),
+        monthlyS3StorageGb: 100,
+        monthlyS3PutRequests: 20000,
+        monthlyS3GetRequests: 100000,
+      };
+
+      const nodes = [
+        {
+          id: 's3-bucket',
+          type: 'awsResource',
+          data: { resourceType: 'aws_s3_bucket', label: 'App S3' },
+        },
+      ];
+
+      const result = CostCalculator.calculateCost('arch-s3-reqs', 'us-east-1', nodes, assumptions);
+      const s3Item = result.resourceItems[0];
+
+      // Storage: 100 GB @ $0.023 = $2.30
+      // Tier 1: 20k @ $0.005/1k = $0.10
+      // Tier 2: 100k @ $0.0004/1k = $0.04
+      // Total = $2.44
+      expect(s3Item.monthlyCost).toBe(2.44);
+
+      const tier1Dim = s3Item.dimensions.find((d) => d.name.includes('Tier 1 Requests'));
+      const tier2Dim = s3Item.dimensions.find((d) => d.name.includes('Tier 2 Requests'));
+
+      expect(tier1Dim).toBeDefined();
+      expect(tier1Dim?.extendedCost).toBe(0.1);
+      expect(tier2Dim).toBeDefined();
+      expect(tier2Dim?.extendedCost).toBe(0.04);
+    });
+
+    it('verifies strict parity between backend and frontend calculators on shared benchmark fixture within 0.01 tolerance', async () => {
+      const { BENCHMARK_NODES, BENCHMARK_ASSUMPTIONS, BENCHMARK_EXPECTED } = await import(
+        './data/pricingBenchmarkFixtures.js'
+      );
+      const { calculateClientCost } = await import(
+        '../../../../frontend/src/features/cost-explorer/engine/clientCostCalculator.js'
+      );
+
+      const backendResult = CostCalculator.calculateCost(
+        'arch-bench',
+        'us-east-1',
+        BENCHMARK_NODES,
+        BENCHMARK_ASSUMPTIONS,
+      );
+
+      const frontendResult = calculateClientCost(
+        'arch-bench',
+        'us-east-1',
+        BENCHMARK_NODES as any,
+        [],
+        BENCHMARK_ASSUMPTIONS,
+      );
+
+      const TOLERANCE = 0.01;
+
+      // 1. Total Monthly Cost Parity
+      const totalDiff = Math.abs(backendResult.totalEstimatedMonthly - frontendResult.totalEstimatedMonthly);
+      expect(totalDiff).toBeLessThanOrEqual(TOLERANCE);
+      expect(backendResult.totalEstimatedMonthly).toBe(BENCHMARK_EXPECTED.totalEstimatedMonthly);
+      expect(frontendResult.totalEstimatedMonthly).toBe(BENCHMARK_EXPECTED.totalEstimatedMonthly);
+
+      // 2. Resource-Level Cost Parity
+      expect(backendResult.resourceItems.length).toBe(frontendResult.resourceItems.length);
+      for (const bItem of backendResult.resourceItems) {
+        const fItem = frontendResult.resourceItems.find((f) => f.resourceId === bItem.resourceId);
+        expect(fItem).toBeDefined();
+        const diff = Math.abs(bItem.monthlyCost - fItem!.monthlyCost);
+        expect(diff).toBeLessThanOrEqual(TOLERANCE);
+
+        // Compare individual dimension extendedCosts
+        expect(bItem.dimensions.length).toBe(fItem!.dimensions.length);
+        for (let i = 0; i < bItem.dimensions.length; i++) {
+          const dimDiff = Math.abs(bItem.dimensions[i].extendedCost - fItem!.dimensions[i].extendedCost);
+          expect(dimDiff).toBeLessThanOrEqual(TOLERANCE);
+        }
+      }
+
+      // 3. Service Breakdown Parity
+      for (const bService of backendResult.serviceBreakdown) {
+        const fService = frontendResult.serviceBreakdown.find((f) => f.serviceCode === bService.serviceCode);
+        expect(fService).toBeDefined();
+        const serviceDiff = Math.abs(bService.monthlyCost - fService!.monthlyCost);
+        expect(serviceDiff).toBeLessThanOrEqual(TOLERANCE);
+      }
     });
   });
 });

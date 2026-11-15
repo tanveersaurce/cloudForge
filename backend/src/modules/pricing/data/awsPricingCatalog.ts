@@ -161,6 +161,7 @@ export const BASE_PRICING_RATES: Record<string, { unit: string; price: number; s
   's3:intelligent_infrequent': { unit: 'GB-Mo', price: 0.0125, serviceCode: 'AmazonS3', resourceType: 'aws_s3_bucket' },
   's3:standard_ia': { unit: 'GB-Mo', price: 0.0125, serviceCode: 'AmazonS3', resourceType: 'aws_s3_bucket' },
   's3:requests_tier1': { unit: '1000-Req', price: 0.005, serviceCode: 'AmazonS3', resourceType: 'aws_s3_bucket' },
+  's3:requests_tier2': { unit: '1000-Req', price: 0.0004, serviceCode: 'AmazonS3', resourceType: 'aws_s3_bucket' },
 
   // Networking
   'nat_gateway:hour': { unit: 'Hrs', price: 0.045, serviceCode: 'AmazonVPC', resourceType: 'aws_nat_gateway' },

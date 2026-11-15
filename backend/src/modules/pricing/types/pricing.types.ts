@@ -27,6 +27,8 @@ export interface WorkloadAssumptions {
   monthlyDataTransferOutGb: number;
   monthlyS3StorageGb: number;
   monthlyS3Requests: number;
+  monthlyS3PutRequests?: number;
+  monthlyS3GetRequests?: number;
   monthlyNatTrafficGb: number;
   monthlyLambdaInvocations: number;
   averageLambdaDurationMs: number;

@@ -188,18 +188,23 @@ export class CostCalculator {
 
         case 'aws_s3_bucket': {
           serviceCode = 'AmazonS3';
+          const putRequests = assumptions.monthlyS3PutRequests ?? Math.round(assumptions.monthlyS3Requests * 0.2);
+          const getRequests = assumptions.monthlyS3GetRequests ?? Math.round(assumptions.monthlyS3Requests * 0.8);
+
           missingAssumptions.push(
-            `${label}: S3 workload usage not customized; evaluated using preset assumption (${assumptions.monthlyS3StorageGb} GB storage, ${assumptions.monthlyS3Requests.toLocaleString()} requests).`,
+            `${label}: S3 workload usage evaluated using ${assumptions.monthlyS3StorageGb} GB storage, ${putRequests.toLocaleString()} Tier 1 (PUT/COPY/POST/LIST) requests, and ${getRequests.toLocaleString()} Tier 2 (GET/SELECT) requests. DELETE requests are free ($0.00). S3 Lifecycle transitions, cross-region replication, and data restore requests are not modeled.`,
           );
           warnings.push(
-            `Evaluated using preset assumption: ${assumptions.monthlyS3StorageGb} GB storage, ${assumptions.monthlyS3Requests.toLocaleString()} requests.`,
+            `S3 evaluated with ${putRequests.toLocaleString()} Tier 1 and ${getRequests.toLocaleString()} Tier 2 requests. Lifecycle, replication, and data retrieval requests are not modeled.`,
           );
           const s3Rate = getPriceRate('s3:standard', region);
-          const reqRate = getPriceRate('s3:requests_tier1', region);
+          const tier1Rate = getPriceRate('s3:requests_tier1', region);
+          const tier2Rate = getPriceRate('s3:requests_tier2', region);
 
-          if (s3Rate && reqRate) {
+          if (s3Rate && tier1Rate && tier2Rate) {
             const storageCost = assumptions.monthlyS3StorageGb * s3Rate.pricePerUnit;
-            const reqCost = (assumptions.monthlyS3Requests / 1000) * reqRate.pricePerUnit;
+            const tier1Cost = (putRequests / 1000) * tier1Rate.pricePerUnit;
+            const tier2Cost = (getRequests / 1000) * tier2Rate.pricePerUnit;
 
             dimensions.push({
               name: `Standard Storage (${assumptions.monthlyS3StorageGb} GB)`,
@@ -209,13 +214,20 @@ export class CostCalculator {
               extendedCost: roundMoney(storageCost),
             });
             dimensions.push({
-              name: `Requests (${assumptions.monthlyS3Requests.toLocaleString()} PUT/GET)`,
+              name: `Tier 1 Requests (${putRequests.toLocaleString()} PUT/COPY/POST/LIST)`,
               unit: '1000-Req',
-              quantity: assumptions.monthlyS3Requests / 1000,
-              unitPrice: reqRate.pricePerUnit,
-              extendedCost: roundMoney(reqCost),
+              quantity: putRequests / 1000,
+              unitPrice: tier1Rate.pricePerUnit,
+              extendedCost: roundMoney(tier1Cost),
             });
-            itemMonthly += storageCost + reqCost;
+            dimensions.push({
+              name: `Tier 2 Requests (${getRequests.toLocaleString()} GET/SELECT)`,
+              unit: '1000-Req',
+              quantity: getRequests / 1000,
+              unitPrice: tier2Rate.pricePerUnit,
+              extendedCost: roundMoney(tier2Cost),
+            });
+            itemMonthly += storageCost + tier1Cost + tier2Cost;
           }
           break;
         }
