@@ -24,7 +24,7 @@ interface RouteEntry {
   targetType?: string;
 }
 
-function isInternetGateway(node: ArchitectureFlowNode): boolean {
+export function isInternetGatewayNode(node: ArchitectureFlowNode): boolean {
   const resType = (node.data.resourceType || '').toLowerCase();
   const slug = (node.data.serviceSlug || '').toLowerCase();
   const icon = (node.data.iconKey || '').toLowerCase();
@@ -37,7 +37,7 @@ function isInternetGateway(node: ArchitectureFlowNode): boolean {
   );
 }
 
-function isNatGateway(node: ArchitectureFlowNode): boolean {
+export function isNatGatewayNode(node: ArchitectureFlowNode): boolean {
   const resType = (node.data.resourceType || '').toLowerCase();
   const slug = (node.data.serviceSlug || '').toLowerCase();
   const icon = (node.data.iconKey || '').toLowerCase();
@@ -50,68 +50,180 @@ function isNatGateway(node: ArchitectureFlowNode): boolean {
   );
 }
 
-function isRouteTableNode(node: ArchitectureFlowNode): boolean {
+export function isRouteTableNode(node: ArchitectureFlowNode): boolean {
   const resType = (node.data.resourceType || '').toLowerCase();
   const slug = (node.data.serviceSlug || '').toLowerCase();
+  const icon = (node.data.iconKey || '').toLowerCase();
   return (
     resType === 'route-table' ||
     resType === 'aws_route_table' ||
     slug === 'route-table' ||
-    slug === 'aws-route-table'
+    slug === 'aws-route-table' ||
+    icon === 'route-table'
   );
 }
 
 /**
- * Checks if an edge represents an active routing association.
- * Unrelated edges (e.g. connects-to, accesses, monitors, replicates-to) are not routing evidence.
+ * Route relationships represent actual packet forwarding/routes.
+ * Structural links like 'attached-to', 'associated-with', 'gateway-attachment'
+ * are attachment / association links, NOT route hops.
  */
-function isRouteEdge(edge: ArchitectureFlowEdge): boolean {
-  const rel = (edge.data?.relationshipType || '').toLowerCase();
-  const meta = edge.data?.metadata || {};
-  const hasDestCidr = Boolean(
-    meta.destinationCidr || meta.destination_cidr_block || meta.destination,
-  );
-
+function isRouteRelationship(rel?: string): boolean {
+  if (!rel) return false;
+  const r = rel.toLowerCase();
   return (
-    rel === 'routes-to' ||
-    rel === 'routes-traffic-to' ||
-    rel === 'default-route' ||
-    rel === 'attached-to' ||
-    rel === 'gateway-attachment' ||
-    rel === 'associated-with' ||
-    hasDestCidr
+    r === 'routes-to' ||
+    r === 'routes-traffic-to' ||
+    r === 'default-route' ||
+    r === 'routes'
+  );
+}
+
+function isAssociationRelationship(rel?: string, edgeLabel?: string): boolean {
+  if (!rel) return false;
+  const r = rel.toLowerCase();
+  const l = (edgeLabel || '').toLowerCase();
+  return (
+    r === 'associated-with' ||
+    r === 'associates-with' ||
+    r === 'subnet-association' ||
+    r === 'attached-to' ||
+    r === 'routes-through' ||
+    r === 'connects-to' ||
+    l.includes('assoc')
   );
 }
 
 /**
- * Validates whether the route targets a default internet destination (0.0.0.0/0 or ::/0).
- * If destination CIDR is restricted to an internal block (e.g. 10.0.0.0/16), it is NOT a default route.
+ * Extracts and strictly validates destination CIDR.
+ * NEVER treats a missing destination CIDR as 0.0.0.0/0.
+ * Requires an explicit 0.0.0.0/0, ::/0 or explicit default route destination.
  */
-function isDefaultInternetRoute(edge: ArchitectureFlowEdge): boolean {
-  const meta = edge.data?.metadata || {};
-  const dest = (
-    meta.destinationCidr ||
-    meta.destination_cidr_block ||
-    meta.destination ||
+function extractExplicitDefaultDestination(
+  meta?: Record<string, unknown>,
+  label?: string,
+): string | null {
+  const raw = (
+    meta?.destinationCidr ||
+    meta?.destination_cidr_block ||
+    meta?.destination ||
     ''
   ) as string;
 
-  if (!dest) return true; // Default / implicit default route when routing to a gateway
-  const trimmed = dest.trim().toLowerCase();
-  return trimmed === '0.0.0.0/0' || trimmed === '::/0' || trimmed === 'default';
+  if (raw && typeof raw === 'string') {
+    const trimmed = raw.trim().toLowerCase();
+    if (trimmed === '0.0.0.0/0' || trimmed === '::/0' || trimmed === 'default') {
+      return trimmed;
+    }
+    // If destination is specified but not 0.0.0.0/0 (e.g. 10.0.0.0/16), it's not a default route
+    return null;
+  }
+
+  // Also check edge label if it explicitly specifies 0.0.0.0/0 or ::/0
+  if (label && typeof label === 'string') {
+    const trimmed = label.trim().toLowerCase();
+    if (trimmed.includes('0.0.0.0/0') || trimmed.includes('::/0')) {
+      return '0.0.0.0/0';
+    }
+  }
+
+  // Missing destination CIDR is NOT a default route
+  return null;
+}
+
+function isExplicitDefaultRoute(meta?: Record<string, unknown>, label?: string): boolean {
+  return extractExplicitDefaultDestination(meta, label) !== null;
+}
+
+function findNodeById(id: string, allNodes: ArchitectureFlowNode[]): ArchitectureFlowNode | undefined {
+  if (!id) return undefined;
+  const cleanId = id.trim().toLowerCase();
+  return allNodes.find((n) => n.id.toLowerCase() === cleanId);
+}
+
+function verifyIgwTargetId(targetId: string, allNodes: ArchitectureFlowNode[]): boolean {
+  const node = findNodeById(targetId, allNodes);
+  return Boolean(node && isInternetGatewayNode(node));
+}
+
+function verifyNatTargetId(targetId: string, allNodes: ArchitectureFlowNode[]): boolean {
+  const node = findNodeById(targetId, allNodes);
+  return Boolean(node && isNatGatewayNode(node));
 }
 
 /**
- * Classifies a subnet using actual networking evidence rather than naive label substring matching.
+ * Finds Route Table nodes that are actually associated with the given subnet.
+ * Checks:
+ * 1. Subnet metadata routeTableId referencing the Route Table node
+ * 2. Graph edge between Subnet and Route Table with association relationship
+ * 3. Route Table node metadata subnetIds referencing this subnet
+ */
+function getAssociatedRouteTables(
+  subnetData: AwsResourceNodeData,
+  subnetId?: string,
+  allNodes?: ArchitectureFlowNode[],
+  allEdges?: ArchitectureFlowEdge[],
+): ArchitectureFlowNode[] {
+  if (!allNodes || allNodes.length === 0) return [];
+  const associatedTables: ArchitectureFlowNode[] = [];
+  const metadata = subnetData.metadata || {};
+  const metaRtId = (metadata.routeTableId || metadata.associatedRouteTableId) as string | undefined;
+
+  // 1. Metadata reference from subnet
+  if (metaRtId) {
+    const rtNode = findNodeById(metaRtId, allNodes);
+    if (rtNode && isRouteTableNode(rtNode)) {
+      associatedTables.push(rtNode);
+    }
+  }
+
+  // 2. Association edge between Subnet and Route Table
+  if (subnetId && allEdges) {
+    const directEdges = allEdges.filter(
+      (e) => e.source === subnetId || e.target === subnetId,
+    );
+    for (const edge of directEdges) {
+      const rel = (edge.data?.relationshipType || '').toLowerCase();
+      const label = (edge.data?.label || '').toLowerCase();
+      if (!isAssociationRelationship(rel, label)) continue;
+
+      const otherId = edge.source === subnetId ? edge.target : edge.source;
+      const otherNode = allNodes.find((n) => n.id === otherId);
+      if (otherNode && isRouteTableNode(otherNode)) {
+        if (!associatedTables.some((t) => t.id === otherNode.id)) {
+          associatedTables.push(otherNode);
+        }
+      }
+    }
+  }
+
+  // 3. Metadata reference on Route Table
+  if (subnetId) {
+    for (const n of allNodes) {
+      if (!isRouteTableNode(n)) continue;
+      const subnetList = (n.data.metadata?.subnetIds || n.data.metadata?.subnets) as unknown;
+      if (Array.isArray(subnetList) && subnetList.includes(subnetId)) {
+        if (!associatedTables.some((t) => t.id === n.id)) {
+          associatedTables.push(n);
+        }
+      }
+    }
+  }
+
+  return associatedTables;
+}
+
+/**
+ * Classifies a subnet using strict AWS networking evidence.
  *
- * Rules:
- * 1. Never classify a subnet as public solely because its label or metadata says "public".
- * 2. Verify public reachability using actual route table, subnet association, destination CIDR (0.0.0.0/0)
- *    and Internet Gateway configuration.
- * 3. Classify private subnets only when valid NAT-based routing is established without direct IGW access.
- * 4. Do not classify unrelated graph connections (EC2, RDS, ALB) as isolated subnet evidence.
- * 5. If networking configuration is incomplete or ambiguous, return 'unknown'.
- * 6. Keep classification separate from visual labels and display names.
+ * Requirements:
+ * 1. Never treat a missing destination CIDR as 0.0.0.0/0. Require an explicit valid default route.
+ * 2. Do not treat 'attached-to', 'associated-with', or 'gateway-attachment' alone as routing evidence.
+ * 3. Verify the complete relationship: Subnet -> Route Table association -> Route -> IGW/NAT target.
+ * 4. A route table must actually be associated with the subnet before using its routes for classification.
+ * 5. Verify NAT/IGW target IDs against the correct resource, not merely the existence of any NAT/IGW node.
+ * 6. If association or route information is missing, return 'unknown'.
+ * 7. Do not classify unrelated graph connections (EC2, RDS, ALB) as isolated subnet evidence.
  */
 export function classifySubnet(
   subnetData: AwsResourceNodeData,
@@ -124,7 +236,7 @@ export function classifySubnet(
   let hasNatRoute = false;
   let hasExplicitLocalRouteTable = false;
 
-  // 1. Inspect explicit route table defined in subnet metadata
+  // 1. Inspect explicit route table configured directly in subnet metadata
   const routesConfig: RouteEntry[] = Array.isArray(metadata.routes)
     ? (metadata.routes as RouteEntry[])
     : Array.isArray((metadata.routeTable as Record<string, unknown>)?.routes)
@@ -135,21 +247,26 @@ export function classifySubnet(
     let hasDefaultRoute = false;
     for (const r of routesConfig) {
       const dest = (r.destination || r.destinationCidr || r.destination_cidr_block || '').trim();
-      const target = (r.target || r.gatewayId || r.natGatewayId || r.targetType || '').toLowerCase();
+      const target = (r.target || r.gatewayId || r.natGatewayId || r.targetType || '').trim();
       const isDefault = dest === '0.0.0.0/0' || dest === '::/0' || dest.toLowerCase() === 'default';
 
       if (isDefault) {
         hasDefaultRoute = true;
-        if (target.includes('igw') || target.includes('internet-gateway')) {
-          // If allNodes is provided, verify IGW actually exists in topology
-          const igwExists = allNodes ? allNodes.some(isInternetGateway) : true;
-          if (igwExists) {
+        // Verify target ID against correct resource if allNodes is provided
+        if (allNodes && allNodes.length > 0) {
+          if (verifyIgwTargetId(target, allNodes)) {
             hasIgwRoute = true;
           }
-        }
-        if (target.includes('nat')) {
-          const natExists = allNodes ? allNodes.some(isNatGateway) : true;
-          if (natExists) {
+          if (verifyNatTargetId(target, allNodes)) {
+            hasNatRoute = true;
+          }
+        } else {
+          // If no canvas topology is provided, check explicit target format
+          const targetLower = target.toLowerCase();
+          if (targetLower.includes('igw') || targetLower.includes('internet-gateway')) {
+            hasIgwRoute = true;
+          }
+          if (targetLower.includes('nat')) {
             hasNatRoute = true;
           }
         }
@@ -157,83 +274,94 @@ export function classifySubnet(
     }
 
     if (!hasDefaultRoute && routesConfig.length > 0) {
-      // Route table configured with only local / VPC endpoints routes
       hasExplicitLocalRouteTable = true;
     }
   }
 
-  // 2. Topology Inspection: Verify route associations via graph edges
-  if (subnetId && allNodes && allEdges) {
-    // Direct edges connected to this subnet
-    const directEdges = allEdges.filter(
-      (e) => e.source === subnetId || e.target === subnetId,
+  // 2. Topology Inspection: Verify associated route tables and route edges
+  if (allNodes && allNodes.length > 0) {
+    // A. Subnet -> Route Table association -> Route -> Gateway Target
+    const associatedRouteTables = getAssociatedRouteTables(
+      subnetData,
+      subnetId,
+      allNodes,
+      allEdges,
     );
 
-    // Child nodes contained within this subnet
-    const childNodeIds = new Set(
-      allNodes.filter((n) => n.parentId === subnetId).map((n) => n.id),
-    );
+    for (const rtNode of associatedRouteTables) {
+      // Check routes defined in Route Table node metadata
+      const rtMetadataRoutes: RouteEntry[] = Array.isArray(rtNode.data.metadata?.routes)
+        ? (rtNode.data.metadata.routes as RouteEntry[])
+        : Array.isArray((rtNode.data.metadata?.routeTable as Record<string, unknown>)?.routes)
+          ? ((rtNode.data.metadata.routeTable as Record<string, unknown>).routes as RouteEntry[])
+          : [];
 
-    // Evaluate direct routing edges from the subnet
-    for (const edge of directEdges) {
-      if (!isRouteEdge(edge)) continue;
+      for (const r of rtMetadataRoutes) {
+        const dest = (r.destination || r.destinationCidr || r.destination_cidr_block || '').trim();
+        const target = (r.target || r.gatewayId || r.natGatewayId || '').trim();
+        const isDefault = dest === '0.0.0.0/0' || dest === '::/0' || dest.toLowerCase() === 'default';
 
-      const otherId = edge.source === subnetId ? edge.target : edge.source;
-      const otherNode = allNodes.find((n) => n.id === otherId);
-      if (!otherNode) continue;
-
-      // Check direct link to Internet Gateway with default route
-      if (isInternetGateway(otherNode)) {
-        if (isDefaultInternetRoute(edge)) {
-          hasIgwRoute = true;
+        if (isDefault) {
+          if (verifyIgwTargetId(target, allNodes)) {
+            hasIgwRoute = true;
+          }
+          if (verifyNatTargetId(target, allNodes)) {
+            hasNatRoute = true;
+          }
         }
       }
 
-      // Check direct link to NAT Gateway
-      if (isNatGateway(otherNode)) {
-        if (isDefaultInternetRoute(edge)) {
-          hasNatRoute = true;
-        }
-      }
-
-      // Check link to Route Table intermediary
-      if (isRouteTableNode(otherNode)) {
+      // Check outgoing route edges from the associated Route Table node
+      if (allEdges) {
         const rtEdges = allEdges.filter(
-          (e) => e.source === otherId || e.target === otherId,
+          (e) => e.source === rtNode.id || e.target === rtNode.id,
         );
-        for (const rtEdge of rtEdges) {
-          if (!isRouteEdge(rtEdge) || !isDefaultInternetRoute(rtEdge)) continue;
-          const targetId = rtEdge.source === otherId ? rtEdge.target : rtEdge.source;
+
+        for (const edge of rtEdges) {
+          const rel = edge.data?.relationshipType;
+          // Must be an active route relationship; attachments/associations alone are NOT routes
+          if (!isRouteRelationship(rel)) continue;
+
+          // Must require an explicit default destination CIDR (never assume default on missing CIDR)
+          if (!isExplicitDefaultRoute(edge.data?.metadata, edge.data?.label)) continue;
+
+          const targetId = edge.source === rtNode.id ? edge.target : edge.source;
           const targetNode = allNodes.find((n) => n.id === targetId);
           if (!targetNode) continue;
 
-          if (isInternetGateway(targetNode)) {
+          if (isInternetGatewayNode(targetNode)) {
             hasIgwRoute = true;
           }
-          if (isNatGateway(targetNode)) {
+          if (isNatGatewayNode(targetNode)) {
             hasNatRoute = true;
           }
         }
       }
     }
 
-    // Evaluate child workloads routing to NAT or IGW
-    if (childNodeIds.size > 0) {
-      for (const edge of allEdges) {
-        if (!isRouteEdge(edge)) continue;
-        const isSourceChild = childNodeIds.has(edge.source);
-        const isTargetChild = childNodeIds.has(edge.target);
-        if (!isSourceChild && !isTargetChild) continue;
+    // B. Direct route edge between Subnet and Gateway (with explicit default CIDR & route relationship)
+    if (subnetId && allEdges) {
+      const directEdges = allEdges.filter(
+        (e) => e.source === subnetId || e.target === subnetId,
+      );
 
-        const otherId = isSourceChild ? edge.target : edge.source;
+      for (const edge of directEdges) {
+        const rel = edge.data?.relationshipType;
+        // Do NOT treat attached-to, associated-with, or gateway-attachment as routing evidence
+        if (!isRouteRelationship(rel)) continue;
+
+        // Must require an explicit default route (0.0.0.0/0 or ::/0)
+        if (!isExplicitDefaultRoute(edge.data?.metadata, edge.data?.label)) continue;
+
+        const otherId = edge.source === subnetId ? edge.target : edge.source;
         const otherNode = allNodes.find((n) => n.id === otherId);
         if (!otherNode) continue;
 
-        if (isNatGateway(otherNode) && isDefaultInternetRoute(edge)) {
-          hasNatRoute = true;
-        }
-        if (isInternetGateway(otherNode) && isDefaultInternetRoute(edge)) {
+        if (isInternetGatewayNode(otherNode)) {
           hasIgwRoute = true;
+        }
+        if (isNatGatewayNode(otherNode)) {
+          hasNatRoute = true;
         }
       }
     }
@@ -241,7 +369,7 @@ export function classifySubnet(
 
   // 3. Classification Determination
 
-  // Public: Verified default route to an Internet Gateway
+  // Public: Complete verified default route (0.0.0.0/0) to an Internet Gateway
   if (hasIgwRoute) {
     return {
       classification: 'public',
@@ -252,7 +380,7 @@ export function classifySubnet(
     };
   }
 
-  // Private: Verified egress route through NAT Gateway without direct IGW reachability
+  // Private: Complete verified egress route through NAT Gateway without direct IGW reachability
   if (hasNatRoute) {
     return {
       classification: 'private',
