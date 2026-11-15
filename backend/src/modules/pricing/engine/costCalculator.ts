@@ -51,6 +51,10 @@ export class CostCalculator {
         case 'aws_instance': {
           serviceCode = 'AmazonEC2';
           const instanceType = (meta.instance_type as string) || 't3.micro';
+          if (!meta.instance_type) {
+            missingAssumptions.push(`${label}: instance_type not configured; assumed default t3.micro.`);
+            warnings.push('instance_type not configured; assumed default t3.micro.');
+          }
           const rateKey = `ec2:${instanceType}`;
           const rate = getPriceRate(rateKey, region);
 
@@ -71,6 +75,10 @@ export class CostCalculator {
 
           // Optional root volume storage
           const rootSize = Number(meta.root_volume_size || 20); // Default 20GB root
+          if (!meta.root_volume_size) {
+            missingAssumptions.push(`${label}: root_volume_size not configured; assumed default 20 GB gp3.`);
+            warnings.push('root_volume_size not configured; assumed default 20 GB gp3.');
+          }
           const ebsRate = getPriceRate('ebs:gp3', region);
           if (ebsRate) {
             const ebsCost = rootSize * ebsRate.pricePerUnit;
@@ -125,6 +133,10 @@ export class CostCalculator {
         case 'aws_db_instance': {
           serviceCode = 'AmazonRDS';
           const instanceClass = (meta.instance_class as string) || 'db.t3.micro';
+          if (!meta.instance_class) {
+            missingAssumptions.push(`${label}: instance_class not configured; assumed default db.t3.micro.`);
+            warnings.push('instance_class not configured; assumed default db.t3.micro.');
+          }
           const isMultiAz = meta.multi_az === true;
           const rateKey = `rds:${instanceClass}`;
           const rate = getPriceRate(rateKey, region);
@@ -146,6 +158,10 @@ export class CostCalculator {
           }
 
           const storageGb = Number(meta.allocated_storage || 20);
+          if (!meta.allocated_storage) {
+            missingAssumptions.push(`${label}: allocated_storage not configured; assumed default 20 GB gp3.`);
+            warnings.push('allocated_storage not configured; assumed default 20 GB gp3.');
+          }
           const storageRate = getPriceRate('rds:storage_gp3', region);
           if (storageRate) {
             const storageCost = storageGb * storageRate.pricePerUnit * (isMultiAz ? 2.0 : 1.0);

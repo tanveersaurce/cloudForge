@@ -278,4 +278,94 @@ describe('Cost Optimization Section Component', () => {
       expect(onApplyMock).toHaveBeenCalledWith('REC-GRAVITON-1');
     });
   });
+
+  describe('Pricing Engine Accuracy, Regional Scaling & Missing Configurations', () => {
+    it('applies regional pricing multipliers accurately in client-side calculations', () => {
+      const node: ArchitectureFlowNode = {
+        id: 'ec2-regional',
+        type: 'awsResource',
+        position: { x: 0, y: 0 },
+        data: {
+          serviceId: 'svc-ec2',
+          serviceSlug: 'amazon-ec2',
+          serviceName: 'Amazon EC2',
+          categorySlug: 'compute',
+          categoryName: 'Compute',
+          iconKey: 'ec2',
+          resourceName: 'EC2',
+          resourceType: 'aws_instance',
+          label: 'Regional Server',
+          description: '',
+          metadata: { instance_type: 't3.micro', root_volume_size: 20 },
+        },
+      };
+
+      const usEastResult = calculateClientCost('arch-reg', 'us-east-1', [node], [], DEFAULT_CLIENT_ASSUMPTIONS);
+      const tokyoResult = calculateClientCost('arch-reg', 'ap-northeast-1', [node], [], DEFAULT_CLIENT_ASSUMPTIONS);
+
+      // Tokyo regional multiplier is 1.14x
+      expect(tokyoResult.totalEstimatedMonthly).toBeGreaterThan(usEastResult.totalEstimatedMonthly);
+      expect(tokyoResult.totalEstimatedMonthly).toBeCloseTo(usEastResult.totalEstimatedMonthly * 1.14, 0);
+
+      // Check item metadata
+      expect(tokyoResult.resourceItems[0].region).toBe('ap-northeast-1');
+      expect(tokyoResult.resourceItems[0].pricingSource).toBe('AWS Price List Reference Snapshot (Illustrative)');
+      expect(tokyoResult.resourceItems[0].pricingRetrievedAt).toBe('2026-11-01T00:00:00.000Z');
+    });
+
+    it('marks pricing as unavailable for unrecognized instance types without silently falling back to t3.micro', () => {
+      const node: ArchitectureFlowNode = {
+        id: 'ec2-unknown-sku',
+        type: 'awsResource',
+        position: { x: 0, y: 0 },
+        data: {
+          serviceId: 'svc-ec2',
+          serviceSlug: 'amazon-ec2',
+          serviceName: 'Amazon EC2',
+          categorySlug: 'compute',
+          categoryName: 'Compute',
+          iconKey: 'ec2',
+          resourceName: 'EC2',
+          resourceType: 'aws_instance',
+          label: 'Super Compute',
+          description: '',
+          metadata: { instance_type: 'c5.24xlarge' }, // Not in catalog
+        },
+      };
+
+      const result = calculateClientCost('arch-sku', 'us-east-1', [node], [], DEFAULT_CLIENT_ASSUMPTIONS);
+      const item = result.resourceItems[0];
+
+      // Must be flagged as unavailable
+      expect(item.isPricingAvailable).toBe(false);
+      expect(item.warnings.some((w) => w.includes('Pricing unavailable for instance type "c5.24xlarge"'))).toBe(true);
+    });
+
+    it('records explicit warnings and missingAssumptions when configurations default silently', () => {
+      const node: ArchitectureFlowNode = {
+        id: 'ec2-defaults',
+        type: 'awsResource',
+        position: { x: 0, y: 0 },
+        data: {
+          serviceId: 'svc-ec2',
+          serviceSlug: 'amazon-ec2',
+          serviceName: 'Amazon EC2',
+          categorySlug: 'compute',
+          categoryName: 'Compute',
+          iconKey: 'ec2',
+          resourceName: 'EC2',
+          resourceType: 'aws_instance',
+          label: 'Default Instance',
+          description: '',
+          metadata: {}, // Missing instance_type and root_volume_size
+        },
+      };
+
+      const result = calculateClientCost('arch-def', 'us-east-1', [node], [], DEFAULT_CLIENT_ASSUMPTIONS);
+
+      expect(result.missingAssumptions.length).toBeGreaterThanOrEqual(2);
+      expect(result.missingAssumptions.some((a) => a.includes('instance_type not configured'))).toBe(true);
+      expect(result.missingAssumptions.some((a) => a.includes('root_volume_size not configured'))).toBe(true);
+    });
+  });
 });

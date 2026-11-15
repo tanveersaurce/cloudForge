@@ -203,6 +203,40 @@ describe('AWS Cost Estimation Engine & Intelligent Optimization (Phase 08)', () 
       const totalBreakdown = result.serviceBreakdown.reduce((sum, s) => sum + s.percentage, 0);
       expect(totalBreakdown).toBeCloseTo(100, 0);
     });
+
+    it('marks pricing as unavailable for unrecognized instances and records missing configuration assumptions', () => {
+      const assumptions = getDefaultAssumptions();
+      const nodes = [
+        {
+          id: 'ec2-unknown',
+          type: 'awsResource',
+          data: {
+            resourceType: 'aws_instance',
+            label: 'Mystery Box',
+            metadata: { instance_type: 'c5.unknown-sku' },
+          },
+        },
+        {
+          id: 'ec2-unconfigured',
+          type: 'awsResource',
+          data: {
+            resourceType: 'aws_instance',
+            label: 'Blank EC2',
+            metadata: {}, // Missing instance_type and root_volume_size
+          },
+        },
+      ];
+
+      const result = CostCalculator.calculateCost('arch-unknown', 'us-east-1', nodes, assumptions);
+
+      const unknownItem = result.resourceItems.find((r) => r.resourceId === 'ec2-unknown');
+      expect(unknownItem?.isPricingAvailable).toBe(false);
+      expect(unknownItem?.warnings.some((w) => w.includes('Pricing unavailable'))).toBe(true);
+
+      // Verify missing configuration assumptions recorded
+      expect(result.missingAssumptions.some((a) => a.includes('instance_type not configured'))).toBe(true);
+      expect(result.missingAssumptions.some((a) => a.includes('root_volume_size not configured'))).toBe(true);
+    });
   });
 
   describe('Intelligent Cost Optimization Engine', () => {

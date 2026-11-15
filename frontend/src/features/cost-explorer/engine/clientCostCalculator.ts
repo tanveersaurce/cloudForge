@@ -11,6 +11,17 @@ import type {
   WorkloadAssumptions,
 } from '../types/pricing.types';
 
+export const REGION_PRICE_MULTIPLIERS: Record<string, number> = {
+  'us-east-1': 1.0,
+  'us-east-2': 1.0,
+  'us-west-1': 1.12,
+  'us-west-2': 1.0,
+  'eu-west-1': 1.08,
+  'eu-central-1': 1.10,
+  'ap-southeast-1': 1.15,
+  'ap-northeast-1': 1.14,
+};
+
 export const CLIENT_BASE_RATES: Record<string, number> = {
   'ec2:t3.micro': 0.0104,
   'ec2:t3.small': 0.0208,
@@ -63,6 +74,8 @@ export function calculateClientCost(
   assumptions: WorkloadAssumptions = DEFAULT_CLIENT_ASSUMPTIONS,
 ): CostEstimationResult {
   const resourceItems: CostItemEstimate[] = [];
+  const missingAssumptions: string[] = [];
+  const multiplier = REGION_PRICE_MULTIPLIERS[region] ?? 1.0;
   let totalMonthly = 0;
   let totalHourly = 0;
 
@@ -81,20 +94,36 @@ export function calculateClientCost(
       case 'aws_instance': {
         serviceCode = 'AmazonEC2';
         const instanceType = (meta.instance_type as string) || 't3.micro';
-        const rate = CLIENT_BASE_RATES[`ec2:${instanceType}`] ?? 0.0104;
-        const computeCost = rate * assumptions.monthlyOperatingHours;
+        if (!meta.instance_type) {
+          missingAssumptions.push(`${label}: instance_type not configured; assumed default t3.micro.`);
+          warnings.push('instance_type not configured; assumed default t3.micro.');
+        }
 
-        dimensions.push({
-          name: `Compute (${instanceType})`,
-          unit: 'Hrs',
-          quantity: assumptions.monthlyOperatingHours,
-          unitPrice: rate,
-          extendedCost: roundMoney(computeCost),
-        });
-        itemMonthly += computeCost;
+        const baseRate = CLIENT_BASE_RATES[`ec2:${instanceType}`];
+        if (baseRate !== undefined) {
+          const rate = Math.round(baseRate * multiplier * 1000000) / 1000000;
+          const computeCost = rate * assumptions.monthlyOperatingHours;
+
+          dimensions.push({
+            name: `Compute (${instanceType})`,
+            unit: 'Hrs',
+            quantity: assumptions.monthlyOperatingHours,
+            unitPrice: rate,
+            extendedCost: roundMoney(computeCost),
+          });
+          itemMonthly += computeCost;
+        } else {
+          isAvailable = false;
+          warnings.push(`Pricing unavailable for instance type "${instanceType}". Cost excluded from estimate.`);
+        }
 
         const rootSize = Number(meta.root_volume_size || 20);
-        const ebsRate = CLIENT_BASE_RATES['ebs:gp3'] ?? 0.08;
+        if (!meta.root_volume_size) {
+          missingAssumptions.push(`${label}: root_volume_size not configured; assumed default 20 GB gp3.`);
+          warnings.push('root_volume_size not configured; assumed default 20 GB gp3.');
+        }
+        const baseEbsRate = CLIENT_BASE_RATES['ebs:gp3'] ?? 0.08;
+        const ebsRate = Math.round(baseEbsRate * multiplier * 1000000) / 1000000;
         const ebsCost = rootSize * ebsRate;
         dimensions.push({
           name: `Root EBS Volume (gp3)`,
@@ -110,25 +139,41 @@ export function calculateClientCost(
       case 'aws_db_instance': {
         serviceCode = 'AmazonRDS';
         const instanceClass = (meta.instance_class as string) || 'db.t3.micro';
+        if (!meta.instance_class) {
+          missingAssumptions.push(`${label}: instance_class not configured; assumed default db.t3.micro.`);
+          warnings.push('instance_class not configured; assumed default db.t3.micro.');
+        }
         const isMultiAz = meta.multi_az === true;
-        const rate = CLIENT_BASE_RATES[`rds:${instanceClass}`] ?? 0.017;
-        const multiMultiplier = isMultiAz ? 2.0 : 1.0;
-        const instanceCost = rate * multiMultiplier * assumptions.monthlyOperatingHours;
+        const baseRate = CLIENT_BASE_RATES[`rds:${instanceClass}`];
 
-        dimensions.push({
-          name: `RDS Instance (${instanceClass}${isMultiAz ? ' Multi-AZ' : ''})`,
-          unit: 'Hrs',
-          quantity: assumptions.monthlyOperatingHours,
-          unitPrice: roundMoney(rate * multiMultiplier),
-          extendedCost: roundMoney(instanceCost),
-        });
-        itemMonthly += instanceCost;
+        if (baseRate !== undefined) {
+          const rate = Math.round(baseRate * multiplier * 1000000) / 1000000;
+          const multiMultiplier = isMultiAz ? 2.0 : 1.0;
+          const instanceCost = rate * multiMultiplier * assumptions.monthlyOperatingHours;
+
+          dimensions.push({
+            name: `RDS Instance (${instanceClass}${isMultiAz ? ' Multi-AZ' : ''})`,
+            unit: 'Hrs',
+            quantity: assumptions.monthlyOperatingHours,
+            unitPrice: Math.round(rate * multiMultiplier * 1000000) / 1000000,
+            extendedCost: roundMoney(instanceCost),
+          });
+          itemMonthly += instanceCost;
+        } else {
+          isAvailable = false;
+          warnings.push(`Pricing unavailable for RDS class "${instanceClass}". Cost excluded from estimate.`);
+        }
 
         const storageGb = Number(meta.allocated_storage || 20);
-        const storageRate = CLIENT_BASE_RATES['rds:storage_gp3'] ?? 0.115;
-        const storageCost = storageGb * storageRate * multiMultiplier;
+        if (!meta.allocated_storage) {
+          missingAssumptions.push(`${label}: allocated_storage not configured; assumed default 20 GB gp3.`);
+          warnings.push('allocated_storage not configured; assumed default 20 GB gp3.');
+        }
+        const baseStorageRate = CLIENT_BASE_RATES['rds:storage_gp3'] ?? 0.115;
+        const storageRate = Math.round(baseStorageRate * multiplier * 1000000) / 1000000;
+        const storageCost = storageGb * storageRate * (isMultiAz ? 2.0 : 1.0);
         dimensions.push({
-          name: `Allocated Storage (${storageGb} GB gp3)`,
+          name: `Allocated Storage (${storageGb} GB gp3${isMultiAz ? ' Multi-AZ' : ''})`,
           unit: 'GB-Mo',
           quantity: storageGb * (isMultiAz ? 2 : 1),
           unitPrice: storageRate,
@@ -140,7 +185,8 @@ export function calculateClientCost(
 
       case 'aws_s3_bucket': {
         serviceCode = 'AmazonS3';
-        const s3Rate = CLIENT_BASE_RATES['s3:standard'] ?? 0.023;
+        const baseS3Rate = CLIENT_BASE_RATES['s3:standard'] ?? 0.023;
+        const s3Rate = Math.round(baseS3Rate * multiplier * 1000000) / 1000000;
         const storageCost = assumptions.monthlyS3StorageGb * s3Rate;
         dimensions.push({
           name: `Standard Storage (${assumptions.monthlyS3StorageGb} GB)`,
@@ -157,23 +203,35 @@ export function calculateClientCost(
         serviceCode = 'AmazonEC2';
         const volType = (meta.volume_type as string) || 'gp3';
         const sizeGb = Number(meta.size || 50);
-        const rate = CLIENT_BASE_RATES[`ebs:${volType}`] ?? 0.08;
-        const cost = sizeGb * rate;
-        dimensions.push({
-          name: `EBS Volume (${sizeGb} GB ${volType})`,
-          unit: 'GB-Mo',
-          quantity: sizeGb,
-          unitPrice: rate,
-          extendedCost: roundMoney(cost),
-        });
-        itemMonthly += cost;
+        if (!meta.size) {
+          missingAssumptions.push(`${label}: size not configured; assumed default 50 GB.`);
+          warnings.push('size not configured; assumed default 50 GB.');
+        }
+        const baseRate = CLIENT_BASE_RATES[`ebs:${volType}`];
+        if (baseRate !== undefined) {
+          const rate = Math.round(baseRate * multiplier * 1000000) / 1000000;
+          const cost = sizeGb * rate;
+          dimensions.push({
+            name: `EBS Volume (${sizeGb} GB ${volType})`,
+            unit: 'GB-Mo',
+            quantity: sizeGb,
+            unitPrice: rate,
+            extendedCost: roundMoney(cost),
+          });
+          itemMonthly += cost;
+        } else {
+          isAvailable = false;
+          warnings.push(`Pricing unavailable for EBS volume type "${volType}". Cost excluded from estimate.`);
+        }
         break;
       }
 
       case 'aws_nat_gateway': {
         serviceCode = 'AmazonVPC';
-        const hrRate = CLIENT_BASE_RATES['nat_gateway:hour'] ?? 0.045;
-        const dataRate = CLIENT_BASE_RATES['nat_gateway:data'] ?? 0.045;
+        const baseHrRate = CLIENT_BASE_RATES['nat_gateway:hour'] ?? 0.045;
+        const baseDataRate = CLIENT_BASE_RATES['nat_gateway:data'] ?? 0.045;
+        const hrRate = Math.round(baseHrRate * multiplier * 1000000) / 1000000;
+        const dataRate = Math.round(baseDataRate * multiplier * 1000000) / 1000000;
         const hrCost = hrRate * assumptions.monthlyOperatingHours;
         const dataCost = assumptions.monthlyNatTrafficGb * dataRate;
 
@@ -197,8 +255,10 @@ export function calculateClientCost(
 
       case 'aws_lb': {
         serviceCode = 'ElasticLoadBalancing';
-        const hrRate = CLIENT_BASE_RATES['alb:hour'] ?? 0.0225;
-        const lcuRate = CLIENT_BASE_RATES['alb:lcu_hour'] ?? 0.008;
+        const baseHrRate = CLIENT_BASE_RATES['alb:hour'] ?? 0.0225;
+        const baseLcuRate = CLIENT_BASE_RATES['alb:lcu_hour'] ?? 0.008;
+        const hrRate = Math.round(baseHrRate * multiplier * 1000000) / 1000000;
+        const lcuRate = Math.round(baseLcuRate * multiplier * 1000000) / 1000000;
         const hrCost = hrRate * assumptions.monthlyOperatingHours;
         const lcuCost = lcuRate * assumptions.monthlyOperatingHours;
 
@@ -261,8 +321,8 @@ export function calculateClientCost(
       hourlyCost: itemHourly,
       currency: 'USD',
       isPricingAvailable: isAvailable,
-      pricingSource: 'AWS Pricing Calculator Engine',
-      pricingRetrievedAt: new Date().toISOString(),
+      pricingSource: 'AWS Price List Reference Snapshot (Illustrative)',
+      pricingRetrievedAt: '2026-11-01T00:00:00.000Z',
       warnings,
     });
   }
@@ -417,7 +477,7 @@ export function calculateClientCost(
     assumptions,
     serviceBreakdown,
     resourceItems,
-    missingAssumptions: [],
+    missingAssumptions,
     potentialMonthlySavings,
     recommendations,
     calculatedAt: new Date().toISOString(),

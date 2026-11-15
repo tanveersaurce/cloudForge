@@ -12,10 +12,13 @@ export const REGION_PRICE_MULTIPLIERS: Record<string, number> = {
 };
 
 export const PRICING_METADATA = {
-  source: 'AWS Price List Bulk API & AWS Pricing Calculator Engine',
-  retrievalTimestamp: '2026-11-13T00:00:00.000Z',
+  source: 'AWS Price List Reference Snapshot (Illustrative)',
+  retrievalTimestamp: '2026-11-01T00:00:00.000Z',
   currency: 'USD',
   version: '2026.11-v1',
+  isLiveApi: false,
+  disclaimer:
+    'Illustrative benchmark rates based on AWS public Price List snapshots. Not actual AWS billing data. Excludes taxes, enterprise discounts, and dynamic spot fluctuations.',
 };
 
 // Base on-demand rates in us-east-1 (USD)
