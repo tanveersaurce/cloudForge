@@ -1,4 +1,4 @@
-import { getPriceRate, PRICING_METADATA } from '../data/awsPricingCatalog.js';
+import { getPriceRate, isSupportedRegion, PRICING_METADATA } from '../data/awsPricingCatalog.js';
 import type {
   CostEstimationResult,
   CostItemEstimate,
@@ -32,6 +32,12 @@ export class CostCalculator {
   ): Omit<CostEstimationResult, 'recommendations' | 'potentialMonthlySavings'> {
     const resourceItems: CostItemEstimate[] = [];
     const missingAssumptions: string[] = [];
+
+    if (!isSupportedRegion(region)) {
+      missingAssumptions.push(
+        `Region "${region}" is not calibrated in the benchmark pricing catalog; default us-east-1 rates applied as illustrative.`,
+      );
+    }
 
     let totalMonthly = 0;
     let totalHourly = 0;
@@ -179,6 +185,12 @@ export class CostCalculator {
 
         case 'aws_s3_bucket': {
           serviceCode = 'AmazonS3';
+          missingAssumptions.push(
+            `${label}: S3 workload usage not customized; evaluated using preset assumption (${assumptions.monthlyS3StorageGb} GB storage, ${assumptions.monthlyS3Requests.toLocaleString()} requests).`,
+          );
+          warnings.push(
+            `Evaluated using preset assumption: ${assumptions.monthlyS3StorageGb} GB storage, ${assumptions.monthlyS3Requests.toLocaleString()} requests.`,
+          );
           const s3Rate = getPriceRate('s3:standard', region);
           const reqRate = getPriceRate('s3:requests_tier1', region);
 
@@ -208,7 +220,15 @@ export class CostCalculator {
         case 'aws_ebs_volume': {
           serviceCode = 'AmazonEC2';
           const volType = (meta.volume_type as string) || 'gp3';
+          if (!meta.volume_type) {
+            missingAssumptions.push(`${label}: volume_type not configured; assumed default gp3.`);
+            warnings.push('volume_type not configured; assumed default gp3.');
+          }
           const sizeGb = Number(meta.size || 50);
+          if (!meta.size) {
+            missingAssumptions.push(`${label}: size not configured; assumed default 50 GB.`);
+            warnings.push('size not configured; assumed default 50 GB.');
+          }
           const rateKey = `ebs:${volType}`;
           const rate = getPriceRate(rateKey, region);
 
@@ -222,12 +242,21 @@ export class CostCalculator {
               extendedCost: roundMoney(storageCost),
             });
             itemMonthly += storageCost;
+          } else {
+            isAvailable = false;
+            warnings.push(`Pricing unavailable for EBS volume type ${volType}`);
           }
           break;
         }
 
         case 'aws_nat_gateway': {
           serviceCode = 'AmazonVPC';
+          missingAssumptions.push(
+            `${label}: NAT Gateway traffic not customized; evaluated using preset assumption (${assumptions.monthlyNatTrafficGb} GB data processed, ${assumptions.monthlyOperatingHours} operating hours).`,
+          );
+          warnings.push(
+            `Evaluated using preset assumption: ${assumptions.monthlyNatTrafficGb} GB data processed, ${assumptions.monthlyOperatingHours} operating hours.`,
+          );
           const hrRate = getPriceRate('nat_gateway:hour', region);
           const dataRate = getPriceRate('nat_gateway:data', region);
 
@@ -256,6 +285,8 @@ export class CostCalculator {
 
         case 'aws_lb': {
           serviceCode = 'ElasticLoadBalancing';
+          missingAssumptions.push(`${label}: ALB LCU not specified; assumed baseline 1.0 LCU usage.`);
+          warnings.push('ALB capacity units assumed baseline 1.0 LCU usage.');
           const albRate = getPriceRate('alb:hour', region);
           const lcuRate = getPriceRate('alb:lcu_hour', region);
 

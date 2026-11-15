@@ -240,14 +240,13 @@ export class PricingService {
       costResult,
     );
 
-    const potentialSavings = recommendations.reduce(
-      (sum, r) => sum + r.estimatedMonthlySavings,
-      0,
-    );
+    const savingsAnalysis = CostOptimizationEngine.calculateAchievableSavings(recommendations);
 
     const fullResult: CostEstimationResult = {
       ...costResult,
-      potentialMonthlySavings: Math.round(potentialSavings * 100) / 100,
+      potentialMonthlySavings: savingsAnalysis.combinedAchievableSavings,
+      individualSavingsSum: savingsAnalysis.individualSavingsSum,
+      hasOverlappingRecommendations: savingsAnalysis.hasOverlappingRecommendations,
       recommendations,
     };
 

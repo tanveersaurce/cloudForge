@@ -1,5 +1,101 @@
 import type { PricingDimensionRate } from '../types/pricing.types.js';
 
+export const SUPPORTED_REGIONS = [
+  'us-east-1',
+  'us-east-2',
+  'us-west-1',
+  'us-west-2',
+  'eu-west-1',
+  'eu-central-1',
+  'ap-southeast-1',
+  'ap-northeast-1',
+] as const;
+
+export function isSupportedRegion(region: string): boolean {
+  return SUPPORTED_REGIONS.includes(region as (typeof SUPPORTED_REGIONS)[number]);
+}
+
+/**
+ * Service-specific regional price ratios relative to us-east-1 benchmark.
+ * Sourced from AWS Price List snapshots.
+ */
+export const SERVICE_REGION_MULTIPLIERS: Record<string, Record<string, number>> = {
+  AmazonEC2: {
+    'us-east-1': 1.0,
+    'us-east-2': 1.0,
+    'us-west-1': 1.12,
+    'us-west-2': 1.0,
+    'eu-west-1': 1.08,
+    'eu-central-1': 1.10,
+    'ap-southeast-1': 1.15,
+    'ap-northeast-1': 1.14,
+  },
+  AmazonRDS: {
+    'us-east-1': 1.0,
+    'us-east-2': 1.0,
+    'us-west-1': 1.15,
+    'us-west-2': 1.0,
+    'eu-west-1': 1.09,
+    'eu-central-1': 1.12,
+    'ap-southeast-1': 1.18,
+    'ap-northeast-1': 1.16,
+  },
+  AmazonS3: {
+    'us-east-1': 1.0,
+    'us-east-2': 1.0,
+    'us-west-1': 1.13,
+    'us-west-2': 1.0,
+    'eu-west-1': 1.043,
+    'eu-central-1': 1.065,
+    'ap-southeast-1': 1.087,
+    'ap-northeast-1': 1.087,
+  },
+  AmazonVPC: {
+    'us-east-1': 1.0,
+    'us-east-2': 1.0,
+    'us-west-1': 1.18,
+    'us-west-2': 1.0,
+    'eu-west-1': 1.11,
+    'eu-central-1': 1.15,
+    'ap-southeast-1': 1.31,
+    'ap-northeast-1': 1.38,
+  },
+  ElasticLoadBalancing: {
+    'us-east-1': 1.0,
+    'us-east-2': 1.0,
+    'us-west-1': 1.11,
+    'us-west-2': 1.0,
+    'eu-west-1': 1.09,
+    'eu-central-1': 1.11,
+    'ap-southeast-1': 1.16,
+    'ap-northeast-1': 1.14,
+  },
+  AWSLambda: {
+    'us-east-1': 1.0,
+    'us-east-2': 1.0,
+    'us-west-1': 1.10,
+    'us-west-2': 1.0,
+    'eu-west-1': 1.05,
+    'eu-central-1': 1.08,
+    'ap-southeast-1': 1.10,
+    'ap-northeast-1': 1.10,
+  },
+};
+
+export function getServiceRegionMultiplier(
+  serviceCode: string,
+  region: string,
+): { multiplier: number; isSupported: boolean } {
+  if (!isSupportedRegion(region)) {
+    return { multiplier: 1.0, isSupported: false };
+  }
+  const serviceRates = SERVICE_REGION_MULTIPLIERS[serviceCode];
+  if (serviceRates && serviceRates[region] !== undefined) {
+    return { multiplier: serviceRates[region], isSupported: true };
+  }
+  return { multiplier: 1.0, isSupported: true };
+}
+
 export const REGION_PRICE_MULTIPLIERS: Record<string, number> = {
   'us-east-1': 1.0,
   'us-east-2': 1.0,
@@ -89,14 +185,21 @@ export function getPriceRate(
   const base = BASE_PRICING_RATES[dimensionKey];
   if (!base) return null;
 
-  const multiplier = REGION_PRICE_MULTIPLIERS[region] ?? 1.0;
+  const { multiplier, isSupported } = getServiceRegionMultiplier(base.serviceCode, region);
   let price = base.price * multiplier;
 
   // Apply commitment discounts if applicable
+  let sourceNote = PRICING_METADATA.source;
+  if (!isSupported) {
+    sourceNote = `${PRICING_METADATA.source} (Unsupported region "${region}": using us-east-1 illustrative rates)`;
+  }
+
   if (priceType === 'Reserved1Yr') {
-    price = price * 0.65; // ~35% discount for 1-yr standard reservation
+    price = price * 0.65; // ~35% benchmark discount for 1-yr standard reservation
+    sourceNote = `${sourceNote} [1-Yr Standard Reserved benchmark: ~35% discount, requires 1-year financial commitment]`;
   } else if (priceType === 'Spot') {
-    price = price * 0.30; // ~70% discount for spot instances
+    price = price * 0.30; // ~70% benchmark discount for spot instances
+    sourceNote = `${sourceNote} [Spot benchmark: ~70% discount; rates fluctuate dynamically and are subject to 2-minute interruption notice]`;
   }
 
   // Decimal precision rounding to 6 decimal places to prevent floating point inaccuracies
@@ -111,7 +214,7 @@ export function getPriceRate(
     pricePerUnit: price,
     currency: 'USD',
     priceType,
-    source: PRICING_METADATA.source,
+    source: sourceNote,
     retrievedAt: PRICING_METADATA.retrievalTimestamp,
   };
 }

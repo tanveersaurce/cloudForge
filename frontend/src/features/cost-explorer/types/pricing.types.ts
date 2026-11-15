@@ -119,4 +119,6 @@ export interface CostEstimationResult {
   potentialMonthlySavings: number;
   recommendations: CostOptimizationRecommendation[];
   calculatedAt: string;
+  individualSavingsSum?: number;
+  hasOverlappingRecommendations?: boolean;
 }

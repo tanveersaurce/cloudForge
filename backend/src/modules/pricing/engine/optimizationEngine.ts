@@ -267,4 +267,72 @@ export class CostOptimizationEngine {
 
     return recommendations.sort((a, b) => b.estimatedMonthlySavings - a.estimatedMonthlySavings);
   }
+
+  public static calculateAchievableSavings(
+    recommendations: CostOptimizationRecommendation[],
+  ): {
+    individualSavingsSum: number;
+    combinedAchievableSavings: number;
+    hasOverlappingRecommendations: boolean;
+    overlapNotes: string[];
+  } {
+    const individualSavingsSum =
+      Math.round(recommendations.reduce((sum, r) => sum + r.estimatedMonthlySavings, 0) * 100) / 100;
+
+    if (recommendations.length <= 1) {
+      return {
+        individualSavingsSum,
+        combinedAchievableSavings: individualSavingsSum,
+        hasOverlappingRecommendations: false,
+        overlapNotes: [],
+      };
+    }
+
+    const architecturalRecs = recommendations.filter((r) => r.category !== 'pricing-model');
+    const pricingModelRecs = recommendations.filter((r) => r.category === 'pricing-model');
+
+    let combinedSavings = 0;
+    const processedResourceIds = new Set<string>();
+    const overlapNotes: string[] = [];
+
+    for (const rec of architecturalRecs) {
+      const hasOverlap = rec.affectedResourceIds.some((id) => processedResourceIds.has(id));
+      if (!hasOverlap) {
+        combinedSavings += rec.estimatedMonthlySavings;
+        rec.affectedResourceIds.forEach((id) => processedResourceIds.add(id));
+      } else {
+        overlapNotes.push(
+          `Recommendation "${rec.title}" overlaps with another optimization on resource(s) ${rec.affectedResourceIds.join(', ')}.`,
+        );
+      }
+    }
+
+    for (const rec of pricingModelRecs) {
+      const overlappingComputeRecs = architecturalRecs.filter(
+        (a) => a.category === 'compute' && a.affectedResourceIds.some((id) => rec.affectedResourceIds.includes(id)),
+      );
+
+      if (overlappingComputeRecs.length > 0) {
+        const totalComputeReductions = overlappingComputeRecs.reduce((s, a) => s + a.estimatedMonthlySavings, 0);
+        const adjustedBaseline = Math.max(0, rec.estimatedCurrentCost - totalComputeReductions);
+        const adjustedSavings = Math.round(adjustedBaseline * (rec.savingsPercentage / 100) * 100) / 100;
+
+        combinedSavings += adjustedSavings;
+        overlapNotes.push(
+          `Savings Plan recommendation adjusted from $${rec.estimatedMonthlySavings.toFixed(2)} to $${adjustedSavings.toFixed(2)} to prevent double-counting with Graviton/rights-sizing optimizations.`,
+        );
+      } else {
+        combinedSavings += rec.estimatedMonthlySavings;
+      }
+    }
+
+    const combinedAchievableSavings = Math.round(combinedSavings * 100) / 100;
+
+    return {
+      individualSavingsSum,
+      combinedAchievableSavings,
+      hasOverlappingRecommendations: overlapNotes.length > 0,
+      overlapNotes,
+    };
+  }
 }

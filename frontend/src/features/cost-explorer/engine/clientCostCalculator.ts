@@ -11,6 +11,102 @@ import type {
   WorkloadAssumptions,
 } from '../types/pricing.types';
 
+export const SUPPORTED_REGIONS = [
+  'us-east-1',
+  'us-east-2',
+  'us-west-1',
+  'us-west-2',
+  'eu-west-1',
+  'eu-central-1',
+  'ap-southeast-1',
+  'ap-northeast-1',
+] as const;
+
+export function isSupportedRegion(region: string): boolean {
+  return SUPPORTED_REGIONS.includes(region as (typeof SUPPORTED_REGIONS)[number]);
+}
+
+/**
+ * Service-specific regional price ratios relative to us-east-1 benchmark.
+ * Sourced from AWS Price List snapshots.
+ */
+export const SERVICE_REGION_MULTIPLIERS: Record<string, Record<string, number>> = {
+  AmazonEC2: {
+    'us-east-1': 1.0,
+    'us-east-2': 1.0,
+    'us-west-1': 1.12,
+    'us-west-2': 1.0,
+    'eu-west-1': 1.08,
+    'eu-central-1': 1.10,
+    'ap-southeast-1': 1.15,
+    'ap-northeast-1': 1.14,
+  },
+  AmazonRDS: {
+    'us-east-1': 1.0,
+    'us-east-2': 1.0,
+    'us-west-1': 1.15,
+    'us-west-2': 1.0,
+    'eu-west-1': 1.09,
+    'eu-central-1': 1.12,
+    'ap-southeast-1': 1.18,
+    'ap-northeast-1': 1.16,
+  },
+  AmazonS3: {
+    'us-east-1': 1.0,
+    'us-east-2': 1.0,
+    'us-west-1': 1.13,
+    'us-west-2': 1.0,
+    'eu-west-1': 1.043,
+    'eu-central-1': 1.065,
+    'ap-southeast-1': 1.087,
+    'ap-northeast-1': 1.087,
+  },
+  AmazonVPC: {
+    'us-east-1': 1.0,
+    'us-east-2': 1.0,
+    'us-west-1': 1.18,
+    'us-west-2': 1.0,
+    'eu-west-1': 1.11,
+    'eu-central-1': 1.15,
+    'ap-southeast-1': 1.31,
+    'ap-northeast-1': 1.38,
+  },
+  ElasticLoadBalancing: {
+    'us-east-1': 1.0,
+    'us-east-2': 1.0,
+    'us-west-1': 1.11,
+    'us-west-2': 1.0,
+    'eu-west-1': 1.09,
+    'eu-central-1': 1.11,
+    'ap-southeast-1': 1.16,
+    'ap-northeast-1': 1.14,
+  },
+  AWSLambda: {
+    'us-east-1': 1.0,
+    'us-east-2': 1.0,
+    'us-west-1': 1.10,
+    'us-west-2': 1.0,
+    'eu-west-1': 1.05,
+    'eu-central-1': 1.08,
+    'ap-southeast-1': 1.10,
+    'ap-northeast-1': 1.10,
+  },
+};
+
+export function getServiceRegionMultiplier(
+  serviceCode: string,
+  region: string,
+): { multiplier: number; isSupported: boolean } {
+  if (!isSupportedRegion(region)) {
+    return { multiplier: 1.0, isSupported: false };
+  }
+  const serviceRates = SERVICE_REGION_MULTIPLIERS[serviceCode];
+  if (serviceRates && serviceRates[region] !== undefined) {
+    return { multiplier: serviceRates[region], isSupported: true };
+  }
+  return { multiplier: 1.0, isSupported: true };
+}
+
 export const REGION_PRICE_MULTIPLIERS: Record<string, number> = {
   'us-east-1': 1.0,
   'us-east-2': 1.0,
@@ -75,7 +171,13 @@ export function calculateClientCost(
 ): CostEstimationResult {
   const resourceItems: CostItemEstimate[] = [];
   const missingAssumptions: string[] = [];
-  const multiplier = REGION_PRICE_MULTIPLIERS[region] ?? 1.0;
+
+  if (!isSupportedRegion(region)) {
+    missingAssumptions.push(
+      `Region "${region}" is not calibrated in the benchmark pricing catalog; default us-east-1 rates applied as illustrative.`,
+    );
+  }
+
   let totalMonthly = 0;
   let totalHourly = 0;
 
@@ -93,6 +195,7 @@ export function calculateClientCost(
     switch (type) {
       case 'aws_instance': {
         serviceCode = 'AmazonEC2';
+        const { multiplier: ec2Mult } = getServiceRegionMultiplier('AmazonEC2', region);
         const instanceType = (meta.instance_type as string) || 't3.micro';
         if (!meta.instance_type) {
           missingAssumptions.push(`${label}: instance_type not configured; assumed default t3.micro.`);
@@ -101,7 +204,7 @@ export function calculateClientCost(
 
         const baseRate = CLIENT_BASE_RATES[`ec2:${instanceType}`];
         if (baseRate !== undefined) {
-          const rate = Math.round(baseRate * multiplier * 1000000) / 1000000;
+          const rate = Math.round(baseRate * ec2Mult * 1000000) / 1000000;
           const computeCost = rate * assumptions.monthlyOperatingHours;
 
           dimensions.push({
@@ -123,7 +226,7 @@ export function calculateClientCost(
           warnings.push('root_volume_size not configured; assumed default 20 GB gp3.');
         }
         const baseEbsRate = CLIENT_BASE_RATES['ebs:gp3'] ?? 0.08;
-        const ebsRate = Math.round(baseEbsRate * multiplier * 1000000) / 1000000;
+        const ebsRate = Math.round(baseEbsRate * ec2Mult * 1000000) / 1000000;
         const ebsCost = rootSize * ebsRate;
         dimensions.push({
           name: `Root EBS Volume (gp3)`,
@@ -138,16 +241,20 @@ export function calculateClientCost(
 
       case 'aws_db_instance': {
         serviceCode = 'AmazonRDS';
+        const { multiplier: rdsMult } = getServiceRegionMultiplier('AmazonRDS', region);
         const instanceClass = (meta.instance_class as string) || 'db.t3.micro';
         if (!meta.instance_class) {
           missingAssumptions.push(`${label}: instance_class not configured; assumed default db.t3.micro.`);
           warnings.push('instance_class not configured; assumed default db.t3.micro.');
         }
         const isMultiAz = meta.multi_az === true;
+        if (meta.multi_az === undefined) {
+          missingAssumptions.push(`${label}: multi_az not configured; assumed default Single-AZ deployment.`);
+        }
         const baseRate = CLIENT_BASE_RATES[`rds:${instanceClass}`];
 
         if (baseRate !== undefined) {
-          const rate = Math.round(baseRate * multiplier * 1000000) / 1000000;
+          const rate = Math.round(baseRate * rdsMult * 1000000) / 1000000;
           const multiMultiplier = isMultiAz ? 2.0 : 1.0;
           const instanceCost = rate * multiMultiplier * assumptions.monthlyOperatingHours;
 
@@ -170,7 +277,7 @@ export function calculateClientCost(
           warnings.push('allocated_storage not configured; assumed default 20 GB gp3.');
         }
         const baseStorageRate = CLIENT_BASE_RATES['rds:storage_gp3'] ?? 0.115;
-        const storageRate = Math.round(baseStorageRate * multiplier * 1000000) / 1000000;
+        const storageRate = Math.round(baseStorageRate * rdsMult * 1000000) / 1000000;
         const storageCost = storageGb * storageRate * (isMultiAz ? 2.0 : 1.0);
         dimensions.push({
           name: `Allocated Storage (${storageGb} GB gp3${isMultiAz ? ' Multi-AZ' : ''})`,
@@ -185,8 +292,15 @@ export function calculateClientCost(
 
       case 'aws_s3_bucket': {
         serviceCode = 'AmazonS3';
+        const { multiplier: s3Mult } = getServiceRegionMultiplier('AmazonS3', region);
+        missingAssumptions.push(
+          `${label}: S3 workload usage not customized; evaluated using preset assumption (${assumptions.monthlyS3StorageGb} GB storage, ${assumptions.monthlyS3Requests.toLocaleString()} requests).`,
+        );
+        warnings.push(
+          `Evaluated using preset assumption: ${assumptions.monthlyS3StorageGb} GB storage, ${assumptions.monthlyS3Requests.toLocaleString()} requests.`,
+        );
         const baseS3Rate = CLIENT_BASE_RATES['s3:standard'] ?? 0.023;
-        const s3Rate = Math.round(baseS3Rate * multiplier * 1000000) / 1000000;
+        const s3Rate = Math.round(baseS3Rate * s3Mult * 1000000) / 1000000;
         const storageCost = assumptions.monthlyS3StorageGb * s3Rate;
         dimensions.push({
           name: `Standard Storage (${assumptions.monthlyS3StorageGb} GB)`,
@@ -201,7 +315,12 @@ export function calculateClientCost(
 
       case 'aws_ebs_volume': {
         serviceCode = 'AmazonEC2';
+        const { multiplier: ebsMult } = getServiceRegionMultiplier('AmazonEC2', region);
         const volType = (meta.volume_type as string) || 'gp3';
+        if (!meta.volume_type) {
+          missingAssumptions.push(`${label}: volume_type not configured; assumed default gp3.`);
+          warnings.push('volume_type not configured; assumed default gp3.');
+        }
         const sizeGb = Number(meta.size || 50);
         if (!meta.size) {
           missingAssumptions.push(`${label}: size not configured; assumed default 50 GB.`);
@@ -209,7 +328,7 @@ export function calculateClientCost(
         }
         const baseRate = CLIENT_BASE_RATES[`ebs:${volType}`];
         if (baseRate !== undefined) {
-          const rate = Math.round(baseRate * multiplier * 1000000) / 1000000;
+          const rate = Math.round(baseRate * ebsMult * 1000000) / 1000000;
           const cost = sizeGb * rate;
           dimensions.push({
             name: `EBS Volume (${sizeGb} GB ${volType})`,
@@ -228,10 +347,17 @@ export function calculateClientCost(
 
       case 'aws_nat_gateway': {
         serviceCode = 'AmazonVPC';
+        const { multiplier: vpcMult } = getServiceRegionMultiplier('AmazonVPC', region);
+        missingAssumptions.push(
+          `${label}: NAT Gateway traffic not customized; evaluated using preset assumption (${assumptions.monthlyNatTrafficGb} GB data processed, ${assumptions.monthlyOperatingHours} operating hours).`,
+        );
+        warnings.push(
+          `Evaluated using preset assumption: ${assumptions.monthlyNatTrafficGb} GB data processed, ${assumptions.monthlyOperatingHours} operating hours.`,
+        );
         const baseHrRate = CLIENT_BASE_RATES['nat_gateway:hour'] ?? 0.045;
         const baseDataRate = CLIENT_BASE_RATES['nat_gateway:data'] ?? 0.045;
-        const hrRate = Math.round(baseHrRate * multiplier * 1000000) / 1000000;
-        const dataRate = Math.round(baseDataRate * multiplier * 1000000) / 1000000;
+        const hrRate = Math.round(baseHrRate * vpcMult * 1000000) / 1000000;
+        const dataRate = Math.round(baseDataRate * vpcMult * 1000000) / 1000000;
         const hrCost = hrRate * assumptions.monthlyOperatingHours;
         const dataCost = assumptions.monthlyNatTrafficGb * dataRate;
 
@@ -255,10 +381,13 @@ export function calculateClientCost(
 
       case 'aws_lb': {
         serviceCode = 'ElasticLoadBalancing';
+        const { multiplier: albMult } = getServiceRegionMultiplier('ElasticLoadBalancing', region);
+        missingAssumptions.push(`${label}: ALB LCU not specified; assumed baseline 1.0 LCU usage.`);
+        warnings.push('ALB capacity units assumed baseline 1.0 LCU usage.');
         const baseHrRate = CLIENT_BASE_RATES['alb:hour'] ?? 0.0225;
         const baseLcuRate = CLIENT_BASE_RATES['alb:lcu_hour'] ?? 0.008;
-        const hrRate = Math.round(baseHrRate * multiplier * 1000000) / 1000000;
-        const lcuRate = Math.round(baseLcuRate * multiplier * 1000000) / 1000000;
+        const hrRate = Math.round(baseHrRate * albMult * 1000000) / 1000000;
+        const lcuRate = Math.round(baseLcuRate * albMult * 1000000) / 1000000;
         const hrCost = hrRate * assumptions.monthlyOperatingHours;
         const lcuCost = lcuRate * assumptions.monthlyOperatingHours;
 
