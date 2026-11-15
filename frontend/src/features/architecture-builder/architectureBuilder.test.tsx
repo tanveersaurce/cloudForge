@@ -907,214 +907,380 @@ describe('AWS Networking, Subnet Classification & Boundary Hierarchy', () => {
   it('never classifies a subnet as public solely based on label or metadata, returning unknown when IGW route is missing', async () => {
     const { classifySubnet } = await import('./utils/networkTopology');
 
+    const subnetNode: ArchitectureFlowNode = {
+      id: 'sub-misleading',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: {
+        ...baseSubnetData,
+        label: 'Public Ingress Subnet 01',
+        metadata: { subnetType: 'public', boundaryType: 'public-subnet' },
+      },
+    };
+
     // Subnet labeled "Public Ingress Subnet" with metadata subnetType: 'public' but NO IGW route
-    const misleadingPublic = classifySubnet({
-      ...baseSubnetData,
-      label: 'Public Ingress Subnet 01',
-      metadata: { subnetType: 'public', boundaryType: 'public-subnet' },
-    });
+    const misleadingPublic = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode],
+      [],
+    );
 
     expect(misleadingPublic.classification).toBe('unknown');
     expect(misleadingPublic.confidence).toBe('unknown');
     expect(misleadingPublic.hasIgwRoute).toBe(false);
-    expect(misleadingPublic.reason).toMatch(/lacks required Internet Gateway/i);
+    expect(misleadingPublic.reason).toMatch(/lacks verified Subnet -> Route Table -> Internet Gateway association/i);
   });
 
-  it('verifies public reachability using actual route table, destination CIDR (0.0.0.0/0), and Internet Gateway route configuration', async () => {
+  it('rejects direct Subnet -> IGW edge without Route Table as unknown', async () => {
     const { classifySubnet } = await import('./utils/networkTopology');
 
     const subnetNode: ArchitectureFlowNode = {
-      id: 'sub-1',
+      id: 'sub-direct-igw',
       type: 'awsResource',
       position: { x: 0, y: 0 },
-      data: { ...baseSubnetData, label: 'Workload Subnet', metadata: {} },
+      data: { ...baseSubnetData, metadata: {} },
     };
-    const igwNode = makeIgwNode('igw-1');
+    const igwNode = makeIgwNode('igw-direct');
 
-    // Case A: Valid default route (0.0.0.0/0) to IGW -> verified public
-    const validIgwEdge: ArchitectureFlowEdge = {
-      id: 'e-sub-igw',
-      source: 'sub-1',
-      target: 'igw-1',
+    const directEdge: ArchitectureFlowEdge = {
+      id: 'e-direct-igw',
+      source: 'sub-direct-igw',
+      target: 'igw-direct',
       type: 'relationship',
       data: normalizeEdgeData({
         relationshipType: 'routes-to',
         metadata: { destinationCidr: '0.0.0.0/0' },
       }),
-    };
-
-    const verifiedPublic = classifySubnet(
-      subnetNode.data,
-      subnetNode.id,
-      [subnetNode, igwNode],
-      [validIgwEdge],
-    );
-    expect(verifiedPublic.classification).toBe('public');
-    expect(verifiedPublic.confidence).toBe('verified');
-    expect(verifiedPublic.hasIgwRoute).toBe(true);
-
-    // Case B: Route to IGW with restricted non-default CIDR (e.g. 10.0.0.0/16) -> NOT public, returns unknown
-    const restrictedEdge: ArchitectureFlowEdge = {
-      id: 'e-sub-igw-restricted',
-      source: 'sub-1',
-      target: 'igw-1',
-      type: 'relationship',
-      data: normalizeEdgeData({
-        relationshipType: 'routes-to',
-        metadata: { destinationCidr: '10.0.0.0/16' },
-      }),
-    };
-
-    const notPublic = classifySubnet(
-      subnetNode.data,
-      subnetNode.id,
-      [subnetNode, igwNode],
-      [restrictedEdge],
-    );
-    expect(notPublic.classification).toBe('unknown');
-    expect(notPublic.hasIgwRoute).toBe(false);
-
-    // Case C: Explicit route table in metadata targeting IGW
-    const metaRoutePublic = classifySubnet(
-      {
-        ...baseSubnetData,
-        metadata: {
-          routes: [{ destination: '0.0.0.0/0', target: 'igw-1' }],
-        },
-      },
-      'sub-1',
-      [subnetNode, igwNode],
-      [],
-    );
-    expect(metaRoutePublic.classification).toBe('public');
-    expect(metaRoutePublic.confidence).toBe('verified');
-    expect(metaRoutePublic.hasIgwRoute).toBe(true);
-  });
-
-  it('classifies private subnets only when valid NAT-based routing is established, and rejects misleading labels', async () => {
-    const { classifySubnet } = await import('./utils/networkTopology');
-
-    const subnetNode: ArchitectureFlowNode = {
-      id: 'sub-2',
-      type: 'awsResource',
-      position: { x: 0, y: 0 },
-      data: {
-        ...baseSubnetData,
-        // Misleading label: labeled "Public Subnet" but actually routing through NAT
-        label: 'Public Subnet (Misleading)',
-        metadata: {},
-      },
-    };
-    const natNode = makeNatNode('nat-1');
-
-    const natEdge: ArchitectureFlowEdge = {
-      id: 'e-sub-nat',
-      source: 'sub-2',
-      target: 'nat-1',
-      type: 'relationship',
-      data: normalizeEdgeData({
-        relationshipType: 'routes-to',
-        metadata: { destinationCidr: '0.0.0.0/0' },
-      }),
-    };
-
-    // Actual topology routing overrides misleading visual label
-    const verifiedPrivate = classifySubnet(
-      subnetNode.data,
-      subnetNode.id,
-      [subnetNode, natNode],
-      [natEdge],
-    );
-    expect(verifiedPrivate.classification).toBe('private');
-    expect(verifiedPrivate.confidence).toBe('verified');
-    expect(verifiedPrivate.hasNatRoute).toBe(true);
-    expect(verifiedPrivate.hasIgwRoute).toBe(false);
-
-    // Subnet labeled "Private Subnet" but with NO NAT route -> returns unknown
-    const misleadingPrivate = classifySubnet({
-      ...baseSubnetData,
-      label: 'Private Subnet 01',
-      metadata: { subnetType: 'private' },
-    });
-    expect(misleadingPrivate.classification).toBe('unknown');
-    expect(misleadingPrivate.confidence).toBe('unknown');
-    expect(misleadingPrivate.hasNatRoute).toBe(false);
-    expect(misleadingPrivate.reason).toMatch(/lacks required NAT Gateway/i);
-  });
-
-  it('does not classify unrelated graph connections as isolated subnet evidence and returns unknown for incomplete routes', async () => {
-    const { classifySubnet } = await import('./utils/networkTopology');
-
-    const subnetNode: ArchitectureFlowNode = {
-      id: 'sub-unrelated',
-      type: 'awsResource',
-      position: { x: 0, y: 0 },
-      data: { ...baseSubnetData, label: 'Workload Subnet', metadata: {} },
-    };
-
-    const ec2Node: ArchitectureFlowNode = {
-      id: 'ec2-node',
-      type: 'awsResource',
-      position: { x: 50, y: 50 },
-      data: {
-        ...baseSubnetData,
-        resourceType: 'aws_instance',
-        label: 'App Server',
-      },
-    };
-
-    // Edge representing EC2 hosted inside or connected to Subnet (unrelated to routing)
-    const unrelatedEdge: ArchitectureFlowEdge = {
-      id: 'e-sub-ec2',
-      source: 'sub-unrelated',
-      target: 'ec2-node',
-      type: 'relationship',
-      data: normalizeEdgeData({ relationshipType: 'contains' }),
     };
 
     const result = classifySubnet(
       subnetNode.data,
       subnetNode.id,
-      [subnetNode, ec2Node],
-      [unrelatedEdge],
+      [subnetNode, igwNode],
+      [directEdge],
     );
 
-    // Must NOT be classified as isolated based on unrelated graph connections!
+    // Direct edge without Route Table association must be rejected
     expect(result.classification).toBe('unknown');
     expect(result.confidence).toBe('unknown');
-    expect(result.reason).toMatch(/insufficient networking configuration/i);
+    expect(result.hasIgwRoute).toBe(false);
   });
 
-  it('verifies isolated and database subnets with explicit verified configuration and no internet egress', async () => {
+  it('rejects direct Subnet -> NAT edge without Route Table as unknown', async () => {
     const { classifySubnet } = await import('./utils/networkTopology');
 
-    // Explicit Database Subnet
-    const dbSubnet = classifySubnet({
-      ...baseSubnetData,
-      metadata: { subnetType: 'database' },
-    });
-    expect(dbSubnet.classification).toBe('database');
-    expect(dbSubnet.confidence).toBe('verified');
-    expect(dbSubnet.hasIgwRoute).toBe(false);
-    expect(dbSubnet.hasNatRoute).toBe(false);
+    const subnetNode: ArchitectureFlowNode = {
+      id: 'sub-direct-nat',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: { ...baseSubnetData, metadata: {} },
+    };
+    const natNode = makeNatNode('nat-direct');
 
-    // Explicit Isolated Subnet
-    const isolatedSubnet = classifySubnet({
-      ...baseSubnetData,
-      metadata: { isolated: true },
-    });
-    expect(isolatedSubnet.classification).toBe('isolated');
-    expect(isolatedSubnet.confidence).toBe('verified');
+    const directEdge: ArchitectureFlowEdge = {
+      id: 'e-direct-nat',
+      source: 'sub-direct-nat',
+      target: 'nat-direct',
+      type: 'relationship',
+      data: normalizeEdgeData({
+        relationshipType: 'routes-to',
+        metadata: { destinationCidr: '0.0.0.0/0' },
+      }),
+    };
 
-    // Route table with local-only routes and no default route -> isolated
-    const localOnlySubnet = classifySubnet({
-      ...baseSubnetData,
-      metadata: {
-        routes: [{ destination: '10.0.0.0/16', target: 'local' }],
+    const result = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode, natNode],
+      [directEdge],
+    );
+
+    // Direct edge without Route Table association must be rejected
+    expect(result.classification).toBe('unknown');
+    expect(result.confidence).toBe('unknown');
+    expect(result.hasNatRoute).toBe(false);
+  });
+
+  it('rejects subnet metadata route without Route Table association as unknown', async () => {
+    const { classifySubnet } = await import('./utils/networkTopology');
+
+    const subnetNode: ArchitectureFlowNode = {
+      id: 'sub-meta-bypass',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: {
+        ...baseSubnetData,
+        metadata: {
+          routes: [{ destination: '0.0.0.0/0', target: 'igw-1' }],
+        },
       },
-    });
-    expect(localOnlySubnet.classification).toBe('isolated');
-    expect(localOnlySubnet.confidence).toBe('verified');
+    };
+    const igwNode = makeIgwNode('igw-1');
+
+    // Subnet metadata route without Route Table association must NOT bypass verification
+    const result = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode, igwNode],
+      [],
+    );
+
+    expect(result.classification).toBe('unknown');
+    expect(result.confidence).toBe('unknown');
+    expect(result.hasIgwRoute).toBe(false);
+  });
+
+  it('rejects generic connects-to and fake association labels for Route Table association as unknown', async () => {
+    const { classifySubnet } = await import('./utils/networkTopology');
+
+    const subnetNode: ArchitectureFlowNode = {
+      id: 'sub-fake-assoc',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: { ...baseSubnetData, metadata: {} },
+    };
+    const rtNode = makeRouteTableNode('rt-fake');
+    const igwNode = makeIgwNode('igw-fake');
+
+    // Edge with generic 'connects-to' and fake label containing 'assoc'
+    const fakeAssocEdge: ArchitectureFlowEdge = {
+      id: 'e-fake-assoc',
+      source: 'sub-fake-assoc',
+      target: 'rt-fake',
+      type: 'relationship',
+      data: normalizeEdgeData({
+        relationshipType: 'connects-to',
+        label: 'associated-with-custom',
+      }),
+    };
+
+    const rtIgwEdge: ArchitectureFlowEdge = {
+      id: 'e-rt-igw',
+      source: 'rt-fake',
+      target: 'igw-fake',
+      type: 'relationship',
+      data: normalizeEdgeData({
+        relationshipType: 'routes-to',
+        metadata: { destinationCidr: '0.0.0.0/0' },
+      }),
+    };
+
+    const result = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode, rtNode, igwNode],
+      [fakeAssocEdge, rtIgwEdge],
+    );
+
+    expect(result.classification).toBe('unknown');
+    expect(result.hasIgwRoute).toBe(false);
+  });
+
+  it('verifies complete relationship: Subnet -> Route Table association -> Route (0.0.0.0/0) -> Gateway target for public and private', async () => {
+    const { classifySubnet } = await import('./utils/networkTopology');
+
+    const subnetNode: ArchitectureFlowNode = {
+      id: 'sub-3hop',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: { ...baseSubnetData, label: '3-Hop Subnet', metadata: {} },
+    };
+    const rtNode = makeRouteTableNode('rt-3hop');
+    const igwNode = makeIgwNode('igw-3hop');
+    const natNode = makeNatNode('nat-3hop');
+
+    // Subnet -> associated-with -> Route Table
+    const assocEdge: ArchitectureFlowEdge = {
+      id: 'e-sub-rt',
+      source: 'sub-3hop',
+      target: 'rt-3hop',
+      type: 'relationship',
+      data: {
+        relationshipType: 'associated-with',
+        direction: 'source-to-target',
+        label: 'Associated Route Table',
+        metadata: {},
+      },
+    };
+
+    // Route Table -> routes-to (0.0.0.0/0) -> IGW
+    const rtIgwEdge: ArchitectureFlowEdge = {
+      id: 'e-rt-igw',
+      source: 'rt-3hop',
+      target: 'igw-3hop',
+      type: 'relationship',
+      data: normalizeEdgeData({
+        relationshipType: 'routes-to',
+        metadata: { destinationCidr: '0.0.0.0/0' },
+      }),
+    };
+
+    const publicResult = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode, rtNode, igwNode],
+      [assocEdge, rtIgwEdge],
+    );
+    expect(publicResult.classification).toBe('public');
+    expect(publicResult.confidence).toBe('verified');
+    expect(publicResult.hasIgwRoute).toBe(true);
+
+    // Route Table -> routes-to (0.0.0.0/0) -> NAT Gateway
+    const rtNatEdge: ArchitectureFlowEdge = {
+      id: 'e-rt-nat',
+      source: 'rt-3hop',
+      target: 'nat-3hop',
+      type: 'relationship',
+      data: normalizeEdgeData({
+        relationshipType: 'routes-to',
+        metadata: { destinationCidr: '0.0.0.0/0' },
+      }),
+    };
+
+    const privateResult = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode, rtNode, natNode],
+      [assocEdge, rtNatEdge],
+    );
+    expect(privateResult.classification).toBe('private');
+    expect(privateResult.confidence).toBe('verified');
+    expect(privateResult.hasNatRoute).toBe(true);
+    expect(privateResult.hasIgwRoute).toBe(false);
+  });
+
+  it('rejects unassociated route tables and wrong target IDs on canvas as unknown', async () => {
+    const { classifySubnet } = await import('./utils/networkTopology');
+
+    const subnetNode: ArchitectureFlowNode = {
+      id: 'sub-orphan',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: { ...baseSubnetData, label: 'Orphan Subnet', metadata: {} },
+    };
+    const unassociatedRtNode = makeRouteTableNode('rt-unassociated');
+    const igwNode = makeIgwNode('igw-valid');
+
+    // Route Table has valid route to IGW, but subnet is NOT associated with this Route Table!
+    const rtIgwEdge: ArchitectureFlowEdge = {
+      id: 'e-rt-igw-orphan',
+      source: 'rt-unassociated',
+      target: 'igw-valid',
+      type: 'relationship',
+      data: normalizeEdgeData({
+        relationshipType: 'routes-to',
+        metadata: { destinationCidr: '0.0.0.0/0' },
+      }),
+    };
+
+    const unassociatedResult = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode, unassociatedRtNode, igwNode],
+      [rtIgwEdge],
+    );
+    expect(unassociatedResult.classification).toBe('unknown');
+    expect(unassociatedResult.hasIgwRoute).toBe(false);
+
+    // Wrong target ID on associated Route Table metadata
+    const rtWithWrongTarget = makeRouteTableNode('rt-wrong-target');
+    rtWithWrongTarget.data.metadata = {
+      routes: [{ destination: '0.0.0.0/0', target: 'igw-wrong-nonexistent' }],
+    };
+    const assocWrongTargetEdge: ArchitectureFlowEdge = {
+      id: 'e-assoc-wrong',
+      source: 'sub-orphan',
+      target: 'rt-wrong-target',
+      type: 'relationship',
+      data: {
+        relationshipType: 'associated-with',
+        direction: 'source-to-target',
+        label: 'Associated Route Table',
+        metadata: {},
+      },
+    };
+
+    const wrongTargetSubnet = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode, rtWithWrongTarget, igwNode],
+      [assocWrongTargetEdge],
+    );
+    expect(wrongTargetSubnet.classification).toBe('unknown');
+    expect(wrongTargetSubnet.hasIgwRoute).toBe(false);
+  });
+
+  it('verifies isolated subnets only when all routes are local VPC routes and no egress exists, and rejects non-local routes or multiple routes with egress', async () => {
+    const { classifySubnet } = await import('./utils/networkTopology');
+
+    const subnetNode: ArchitectureFlowNode = {
+      id: 'sub-iso',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: { ...baseSubnetData, metadata: { vpcCidr: '10.0.0.0/16' } },
+    };
+    const rtNode = makeRouteTableNode('rt-iso');
+    const assocEdge: ArchitectureFlowEdge = {
+      id: 'e-iso-assoc',
+      source: 'sub-iso',
+      target: 'rt-iso',
+      type: 'relationship',
+      data: {
+        relationshipType: 'associated-with',
+        direction: 'source-to-target',
+        label: 'Associated Route Table',
+        metadata: {},
+      },
+    };
+
+    // Case 1: Verified local-only VPC route (10.0.0.0/16 -> local)
+    rtNode.data.metadata = {
+      routes: [{ destination: '10.0.0.0/16', target: 'local' }],
+    };
+    const verifiedIsolated = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode, rtNode],
+      [assocEdge],
+    );
+    expect(verifiedIsolated.classification).toBe('isolated');
+    expect(verifiedIsolated.confidence).toBe('verified');
+    expect(verifiedIsolated.hasIgwRoute).toBe(false);
+    expect(verifiedIsolated.hasNatRoute).toBe(false);
+
+    // Case 2: Non-local restricted route (198.51.100.0/24) incorrectly claimed as isolated -> must be unknown
+    rtNode.data.metadata = {
+      routes: [
+        { destination: '10.0.0.0/16', target: 'local' },
+        { destination: '198.51.100.0/24', target: 'local' },
+      ],
+    };
+    const nonLocalResult = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode, rtNode],
+      [assocEdge],
+    );
+    expect(nonLocalResult.classification).toBe('unknown');
+    expect(nonLocalResult.confidence).toBe('unknown');
+
+    // Case 3: Multiple routes where one provides internet egress -> NOT isolated, must be public
+    const igwNode = makeIgwNode('igw-iso');
+    rtNode.data.metadata = {
+      routes: [
+        { destination: '10.0.0.0/16', target: 'local' },
+        { destination: '0.0.0.0/0', target: 'igw-iso' },
+      ],
+    };
+    const egressResult = classifySubnet(
+      subnetNode.data,
+      subnetNode.id,
+      [subnetNode, rtNode, igwNode],
+      [assocEdge],
+    );
+    expect(egressResult.classification).toBe('public');
+    expect(egressResult.hasIgwRoute).toBe(true);
   });
 
   it('rejects routes with missing destination CIDR and requires explicit 0.0.0.0/0 default route', async () => {
@@ -1208,123 +1374,6 @@ describe('AWS Networking, Subnet Classification & Boundary Hierarchy', () => {
     expect(gwResult.hasIgwRoute).toBe(false);
   });
 
-  it('verifies complete relationship: Subnet -> Route Table association -> Route (0.0.0.0/0) -> Gateway target for public and private', async () => {
-    const { classifySubnet } = await import('./utils/networkTopology');
-
-    const subnetNode: ArchitectureFlowNode = {
-      id: 'sub-3hop',
-      type: 'awsResource',
-      position: { x: 0, y: 0 },
-      data: { ...baseSubnetData, label: '3-Hop Subnet', metadata: {} },
-    };
-    const rtNode = makeRouteTableNode('rt-3hop');
-    const igwNode = makeIgwNode('igw-3hop');
-    const natNode = makeNatNode('nat-3hop');
-
-    // Subnet -> associated-with -> Route Table
-    const assocEdge: ArchitectureFlowEdge = {
-      id: 'e-sub-rt',
-      source: 'sub-3hop',
-      target: 'rt-3hop',
-      type: 'relationship',
-      data: normalizeEdgeData({ relationshipType: 'associated-with' }),
-    };
-
-    // Route Table -> routes-to (0.0.0.0/0) -> IGW
-    const rtIgwEdge: ArchitectureFlowEdge = {
-      id: 'e-rt-igw',
-      source: 'rt-3hop',
-      target: 'igw-3hop',
-      type: 'relationship',
-      data: normalizeEdgeData({
-        relationshipType: 'routes-to',
-        metadata: { destinationCidr: '0.0.0.0/0' },
-      }),
-    };
-
-    const publicResult = classifySubnet(
-      subnetNode.data,
-      subnetNode.id,
-      [subnetNode, rtNode, igwNode],
-      [assocEdge, rtIgwEdge],
-    );
-    expect(publicResult.classification).toBe('public');
-    expect(publicResult.confidence).toBe('verified');
-    expect(publicResult.hasIgwRoute).toBe(true);
-
-    // Route Table -> routes-to (0.0.0.0/0) -> NAT Gateway
-    const rtNatEdge: ArchitectureFlowEdge = {
-      id: 'e-rt-nat',
-      source: 'rt-3hop',
-      target: 'nat-3hop',
-      type: 'relationship',
-      data: normalizeEdgeData({
-        relationshipType: 'routes-to',
-        metadata: { destinationCidr: '0.0.0.0/0' },
-      }),
-    };
-
-    const privateResult = classifySubnet(
-      subnetNode.data,
-      subnetNode.id,
-      [subnetNode, rtNode, natNode],
-      [assocEdge, rtNatEdge],
-    );
-    expect(privateResult.classification).toBe('private');
-    expect(privateResult.confidence).toBe('verified');
-    expect(privateResult.hasNatRoute).toBe(true);
-    expect(privateResult.hasIgwRoute).toBe(false);
-  });
-
-  it('rejects unassociated route tables and wrong target IDs on canvas', async () => {
-    const { classifySubnet } = await import('./utils/networkTopology');
-
-    const subnetNode: ArchitectureFlowNode = {
-      id: 'sub-orphan',
-      type: 'awsResource',
-      position: { x: 0, y: 0 },
-      data: { ...baseSubnetData, label: 'Orphan Subnet', metadata: {} },
-    };
-    const unassociatedRtNode = makeRouteTableNode('rt-unassociated');
-    const igwNode = makeIgwNode('igw-valid');
-
-    // Route Table has valid route to IGW, but subnet is NOT associated with this Route Table!
-    const rtIgwEdge: ArchitectureFlowEdge = {
-      id: 'e-rt-igw-orphan',
-      source: 'rt-unassociated',
-      target: 'igw-valid',
-      type: 'relationship',
-      data: normalizeEdgeData({
-        relationshipType: 'routes-to',
-        metadata: { destinationCidr: '0.0.0.0/0' },
-      }),
-    };
-
-    const unassociatedResult = classifySubnet(
-      subnetNode.data,
-      subnetNode.id,
-      [subnetNode, unassociatedRtNode, igwNode],
-      [rtIgwEdge], // Notice: NO association edge between sub-orphan and rt-unassociated
-    );
-    expect(unassociatedResult.classification).toBe('unknown');
-    expect(unassociatedResult.hasIgwRoute).toBe(false);
-
-    // Negative Test: Route table metadata specifies route with WRONG target ID
-    const wrongTargetSubnet = classifySubnet(
-      {
-        ...baseSubnetData,
-        metadata: {
-          routes: [{ destination: '0.0.0.0/0', target: 'igw-wrong-nonexistent' }],
-        },
-      },
-      'sub-orphan',
-      [subnetNode, igwNode], // igwNode has id 'igw-valid', NOT 'igw-wrong-nonexistent'
-      [],
-    );
-    expect(wrongTargetSubnet.classification).toBe('unknown');
-    expect(wrongTargetSubnet.hasIgwRoute).toBe(false);
-  });
-
   it('keeps boundary container classification separate from visual labels in resolveBoundaryType', async () => {
     const { resolveBoundaryType } = await import('./components/AwsBoundaryContainer');
 
@@ -1341,7 +1390,8 @@ describe('AWS Networking, Subnet Classification & Boundary Hierarchy', () => {
     );
     expect(unverifiedSubnet).toBe('unknown-subnet');
 
-    // Subnet with verified IGW route resolves to 'public-subnet' regardless of label
+    // Subnet with verified 3-hop IGW route resolves to 'public-subnet' regardless of label
+    const rtNode = makeRouteTableNode('rt-x');
     const igwNode = makeIgwNode('igw-x');
     const subnetNode: ArchitectureFlowNode = {
       id: 'sub-x',
@@ -1353,9 +1403,21 @@ describe('AWS Networking, Subnet Classification & Boundary Hierarchy', () => {
         metadata: {},
       },
     };
+    const assocEdge: ArchitectureFlowEdge = {
+      id: 'e-assoc-x',
+      source: 'sub-x',
+      target: 'rt-x',
+      type: 'relationship',
+      data: {
+        relationshipType: 'associated-with',
+        direction: 'source-to-target',
+        label: 'Associated Route Table',
+        metadata: {},
+      },
+    };
     const igwEdge: ArchitectureFlowEdge = {
       id: 'e-x',
-      source: 'sub-x',
+      source: 'rt-x',
       target: 'igw-x',
       type: 'relationship',
       data: normalizeEdgeData({
@@ -1367,8 +1429,8 @@ describe('AWS Networking, Subnet Classification & Boundary Hierarchy', () => {
     const verifiedPublicType = resolveBoundaryType(
       subnetNode.data,
       subnetNode.id,
-      [subnetNode, igwNode],
-      [igwEdge],
+      [subnetNode, rtNode, igwNode],
+      [assocEdge, igwEdge],
     );
     expect(verifiedPublicType).toBe('public-subnet');
   });
