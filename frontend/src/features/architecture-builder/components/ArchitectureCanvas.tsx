@@ -198,7 +198,7 @@ function ArchitectureCanvasInner({ onReactFlowInit }: ArchitectureCanvasProps) {
 
   return (
     <div
-      className="relative flex h-full w-full flex-1 bg-[#080d1a]"
+      className="relative flex h-full w-full flex-1 bg-[#0b1329]"
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
@@ -220,21 +220,43 @@ function ArchitectureCanvasInner({ onReactFlowInit }: ArchitectureCanvasProps) {
         onInit={onReactFlowInit}
         deleteKeyCode={null}
         colorMode="dark"
-        minZoom={0.2}
-        maxZoom={2}
+        minZoom={0.15}
+        maxZoom={2.5}
         proOptions={{ hideAttribution: true }}
-        className="h-full w-full bg-[#080d1a]"
+        className="h-full w-full bg-[#0b1329]"
       >
         <Background
           variant={BackgroundVariant.Dots}
-          gap={20}
-          size={1}
+          gap={24}
+          size={1.2}
           color="#1e293b"
         />
         <MiniMap
           pannable
           zoomable
-          nodeColor="#38bdf8"
+          nodeColor={(node) => {
+            const data = (node as ArchitectureFlowNode).data;
+            if (!data) return '#38bdf8';
+            if (
+              data.metadata?.isBoundary ||
+              data.resourceType === 'vpc' ||
+              data.resourceType === 'subnet' ||
+              data.resourceType === 'aws-cloud' ||
+              data.resourceType === 'region' ||
+              data.resourceType === 'availability-zone'
+            ) {
+              return '#1e293b';
+            }
+            const cat = data.categorySlug;
+            if (cat === 'compute') return '#ED7100';
+            if (cat === 'storage') return '#3F8624';
+            if (cat === 'database') return '#2E73B8';
+            if (cat === 'networking-content-delivery') return '#8C4FFF';
+            if (cat === 'security-identity-compliance') return '#DD344C';
+            if (cat === 'management-governance') return '#E05243';
+            if (cat === 'serverless') return '#ED7100';
+            return '#38bdf8';
+          }}
           maskColor="rgba(8, 13, 26, 0.78)"
           className="!rounded-lg !border !border-slate-800 !bg-slate-900/95 !shadow-xl"
         />

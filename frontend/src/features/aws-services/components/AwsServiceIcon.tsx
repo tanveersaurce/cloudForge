@@ -1,44 +1,43 @@
 import { cn } from '@/utils/cn';
-import { resolveAwsVisual } from '../utils/awsIconMap';
+import { getOfficialAwsVisual } from '../utils/awsIconRegistry';
 
 interface AwsServiceIconProps {
-  iconKey: string;
+  iconKey?: string;
   categoryIconKey?: string;
-  size?: 'sm' | 'md' | 'lg';
+  serviceSlug?: string;
+  resourceType?: string;
+  size?: 'sm' | 'md' | 'lg' | 'xl';
   className?: string;
 }
 
-const CONTAINER_SIZES = {
-  sm: 'h-7 w-7 rounded-md',
-  md: 'h-9 w-9 rounded-lg',
-  lg: 'h-12 w-12 rounded-xl',
-} as const;
-
-const ICON_SIZES = {
-  sm: 'h-3.5 w-3.5',
-  md: 'h-4 w-4',
-  lg: 'h-6 w-6',
+const PIXEL_SIZES = {
+  sm: 24,
+  md: 36,
+  lg: 44,
+  xl: 52,
 } as const;
 
 export function AwsServiceIcon({
   iconKey,
   categoryIconKey,
+  serviceSlug,
+  resourceType,
   size = 'md',
   className,
 }: AwsServiceIconProps) {
-  const { icon: Icon, badgeClassName } = resolveAwsVisual(iconKey, categoryIconKey);
+  const visual = getOfficialAwsVisual(resourceType || serviceSlug || iconKey, categoryIconKey || iconKey);
+  const IconComponent = visual.icon;
+  const pixelSize = PIXEL_SIZES[size];
 
   return (
     <div
       className={cn(
-        'flex shrink-0 items-center justify-center border',
-        CONTAINER_SIZES[size],
-        badgeClassName,
+        'relative inline-flex shrink-0 items-center justify-center rounded-lg shadow-sm transition-transform',
         className,
       )}
       aria-hidden="true"
     >
-      <Icon className={ICON_SIZES[size]} />
+      <IconComponent size={pixelSize} className="h-full w-full object-contain" />
     </div>
   );
 }

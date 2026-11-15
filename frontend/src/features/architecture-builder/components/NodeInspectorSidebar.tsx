@@ -423,7 +423,12 @@ function SelectedNodePanel({
       {/* Identity Header */}
       <section className="rounded-xl border border-border-subtle bg-surface-elevated/80 p-3.5">
         <div className="flex items-start gap-3">
-          <AwsServiceIcon iconKey={data.iconKey} size="md" />
+          <AwsServiceIcon
+            serviceSlug={data.serviceSlug}
+            resourceType={data.resourceType}
+            iconKey={data.iconKey}
+            size="lg"
+          />
           <div className="min-w-0 flex-1">
             <p className="truncate text-[11px] font-medium uppercase tracking-wider text-slate-400">
               {data.serviceName}

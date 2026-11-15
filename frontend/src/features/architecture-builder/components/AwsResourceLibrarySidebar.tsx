@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   GripVertical,
+  Layers,
   Loader2,
   PanelLeftClose,
   PanelLeftOpen,
@@ -36,6 +37,107 @@ export interface AwsResourceLibrarySidebarProps {
   className?: string;
 }
 
+const AWS_BOUNDARIES: AwsResourceRegistryItem[] = [
+  {
+    key: 'boundary-vpc',
+    serviceId: 'svc-amazon-vpc',
+    serviceSlug: 'amazon-vpc',
+    serviceName: 'Amazon VPC',
+    shortName: 'VPC',
+    categorySlug: 'networking-content-delivery',
+    categoryName: 'Networking',
+    categoryIconKey: 'vpc',
+    iconKey: 'vpc',
+    resourceName: 'Virtual Private Cloud',
+    resourceType: 'vpc',
+    description: 'Enclosing network boundary spanning Availability Zones.',
+  },
+  {
+    key: 'boundary-az',
+    serviceId: 'svc-amazon-vpc',
+    serviceSlug: 'amazon-vpc',
+    serviceName: 'Availability Zone',
+    shortName: 'AZ',
+    categorySlug: 'networking-content-delivery',
+    categoryName: 'Networking',
+    categoryIconKey: 'vpc',
+    iconKey: 'vpc',
+    resourceName: 'Availability Zone',
+    resourceType: 'availability-zone',
+    description: 'Isolated physical fault domain container.',
+  },
+  {
+    key: 'boundary-pub-subnet',
+    serviceId: 'svc-amazon-vpc',
+    serviceSlug: 'amazon-vpc',
+    serviceName: 'VPC Subnet',
+    shortName: 'Public Subnet',
+    categorySlug: 'networking-content-delivery',
+    categoryName: 'Networking',
+    categoryIconKey: 'subnet',
+    iconKey: 'subnet',
+    resourceName: 'Public Subnet',
+    resourceType: 'subnet',
+    description: 'Internet-facing subnet routing through an IGW.',
+  },
+  {
+    key: 'boundary-priv-subnet',
+    serviceId: 'svc-amazon-vpc',
+    serviceSlug: 'amazon-vpc',
+    serviceName: 'VPC Subnet',
+    shortName: 'Private Subnet',
+    categorySlug: 'networking-content-delivery',
+    categoryName: 'Networking',
+    categoryIconKey: 'subnet',
+    iconKey: 'subnet',
+    resourceName: 'Private Subnet',
+    resourceType: 'subnet',
+    description: 'Protected subnet routing outbound traffic via NAT.',
+  },
+  {
+    key: 'boundary-db-subnet',
+    serviceId: 'svc-amazon-vpc',
+    serviceSlug: 'amazon-vpc',
+    serviceName: 'VPC Subnet',
+    shortName: 'Database Subnet',
+    categorySlug: 'networking-content-delivery',
+    categoryName: 'Networking',
+    categoryIconKey: 'subnet',
+    iconKey: 'subnet',
+    resourceName: 'Database Subnet',
+    resourceType: 'subnet',
+    description: 'Isolated database tier subnet with strict security access.',
+  },
+  {
+    key: 'boundary-cloud',
+    serviceId: 'svc-amazon-vpc',
+    serviceSlug: 'amazon-vpc',
+    serviceName: 'AWS Cloud',
+    shortName: 'AWS Cloud',
+    categorySlug: 'networking-content-delivery',
+    categoryName: 'Networking',
+    categoryIconKey: 'vpc',
+    iconKey: 'vpc',
+    resourceName: 'AWS Cloud Scope',
+    resourceType: 'aws-cloud',
+    description: 'Global cloud boundary container.',
+  },
+  {
+    key: 'boundary-region',
+    serviceId: 'svc-amazon-vpc',
+    serviceSlug: 'amazon-vpc',
+    serviceName: 'AWS Region',
+    shortName: 'Region',
+    categorySlug: 'networking-content-delivery',
+    categoryName: 'Networking',
+    categoryIconKey: 'vpc',
+    iconKey: 'vpc',
+    resourceName: 'AWS Region Scope',
+    resourceType: 'region',
+    description: 'Regional infrastructure boundary container.',
+  },
+];
+
 export function AwsResourceLibrarySidebar({
   onAddResource,
   collapsed: controlledCollapsed,
@@ -59,6 +161,7 @@ export function AwsResourceLibrarySidebar({
   const [error, setError] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [isBoundariesExpanded, setIsBoundariesExpanded] = useState(true);
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({});
   const [expandedServices, setExpandedServices] = useState<Record<string, boolean>>({});
   const [serviceResources, setServiceResources] = useState<
@@ -105,7 +208,7 @@ export function AwsResourceLibrarySidebar({
       const items = await loadServiceResources(serviceSlug);
       setServiceResources((prev) => ({ ...prev, [serviceSlug]: items }));
     } catch {
-      // Fall back to primary service item if detail fetch fails
+      // Keep empty if load fails
     } finally {
       setLoadingServices((prev) => ({ ...prev, [serviceSlug]: false }));
     }
@@ -142,17 +245,15 @@ export function AwsResourceLibrarySidebar({
           service.shortName.toLowerCase().includes(normalizedQuery) ||
           service.slug.toLowerCase().includes(normalizedQuery) ||
           service.shortDescription.toLowerCase().includes(normalizedQuery) ||
-          service.category.name.toLowerCase().includes(normalizedQuery) ||
-          service.tags.some((tag) => tag.toLowerCase().includes(normalizedQuery));
+          service.category.name.toLowerCase().includes(normalizedQuery);
 
-        const matchesLoadedResource = loadedItems?.some(
+        const matchesSubResource = loadedItems?.some(
           (item) =>
             item.resourceName.toLowerCase().includes(normalizedQuery) ||
-            item.resourceType.toLowerCase().includes(normalizedQuery) ||
-            item.description.toLowerCase().includes(normalizedQuery),
+            item.resourceType.toLowerCase().includes(normalizedQuery),
         );
 
-        if (!matchesService && !matchesLoadedResource) {
+        if (!matchesService && !matchesSubResource) {
           continue;
         }
       }
@@ -169,6 +270,16 @@ export function AwsResourceLibrarySidebar({
   const visibleCategories = useMemo(() => {
     return categories.filter((cat) => (servicesByCategory.get(cat.slug)?.length ?? 0) > 0);
   }, [categories, servicesByCategory]);
+
+  const filteredBoundaries = useMemo(() => {
+    if (!normalizedQuery) return AWS_BOUNDARIES;
+    return AWS_BOUNDARIES.filter(
+      (b) =>
+        b.resourceName.toLowerCase().includes(normalizedQuery) ||
+        b.resourceType.toLowerCase().includes(normalizedQuery) ||
+        b.description.toLowerCase().includes(normalizedQuery),
+    );
+  }, [normalizedQuery]);
 
   const handleDragStart = useCallback(
     (event: DragEvent<HTMLElement>, item: AwsResourceRegistryItem) => {
@@ -280,175 +391,247 @@ export function AwsResourceLibrarySidebar({
               Retry
             </button>
           </div>
-        ) : visibleCategories.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 px-4 py-12 text-center">
-            <SearchX className="h-6 w-6 text-slate-500" />
-            <p className="text-xs font-medium text-slate-300">
-              No matching AWS resources
-            </p>
-            <p className="text-[11px] text-slate-500">
-              Try a different service name, resource type, or category.
-            </p>
-            {searchQuery ? (
-              <button
-                type="button"
-                onClick={() => setSearchQuery('')}
-                className="mt-1 rounded-md border border-border-subtle bg-surface-elevated px-2.5 py-1 text-xs text-sky-400 hover:border-sky-400/50"
-              >
-                Clear search
-              </button>
-            ) : null}
-          </div>
         ) : (
-          <div className="space-y-1.5">
-            {visibleCategories.map((category) => {
-              const catServices = servicesByCategory.get(category.slug) ?? [];
-              const isCategoryExpanded =
-                Boolean(normalizedQuery) || Boolean(expandedCategories[category.slug]);
-              const accent = getCategoryAccent(category.slug);
-
-              return (
-                <div
-                  key={category.id}
-                  className="overflow-hidden rounded-lg border border-border-subtle bg-surface-elevated/40"
+          <div className="space-y-2">
+            {/* AWS Network Boundaries Section */}
+            {filteredBoundaries.length > 0 && (
+              <div className="overflow-hidden rounded-lg border border-purple-500/30 bg-purple-950/10">
+                <button
+                  type="button"
+                  onClick={() => setIsBoundariesExpanded((prev) => !prev)}
+                  className="flex w-full items-center justify-between gap-2 px-2.5 py-2 text-left transition-colors hover:bg-purple-900/20"
                 >
-                  <button
-                    type="button"
-                    onClick={() => toggleCategory(category.slug)}
-                    aria-expanded={isCategoryExpanded}
-                    className="flex w-full items-center justify-between gap-2 px-2.5 py-2 text-left transition-colors hover:bg-surface-hover"
-                  >
-                    <div className="flex min-w-0 items-center gap-2">
-                      {isCategoryExpanded ? (
-                        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                      ) : (
-                        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                      )}
-                      <span
-                        className={cn('h-2 w-2 shrink-0 rounded-full', accent.barClassName)}
-                        aria-hidden="true"
-                      />
-                      <span className="truncate text-xs font-semibold text-slate-200">
-                        {category.name}
-                      </span>
-                    </div>
-                    <span className="shrink-0 rounded bg-canvas px-1.5 py-0.5 text-[10px] font-medium text-slate-400">
-                      {catServices.length}
+                  <div className="flex min-w-0 items-center gap-2">
+                    {isBoundariesExpanded ? (
+                      <ChevronDown className="h-3.5 w-3.5 shrink-0 text-purple-300" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-purple-300" />
+                    )}
+                    <Layers className="h-3.5 w-3.5 text-purple-400" />
+                    <span className="truncate text-xs font-bold tracking-wide text-purple-200">
+                      AWS Network Boundaries
                     </span>
-                  </button>
+                  </div>
+                  <span className="shrink-0 rounded bg-purple-500/20 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-purple-300">
+                    CONTAINERS
+                  </span>
+                </button>
 
-                  {isCategoryExpanded ? (
-                    <div className="space-y-1 border-t border-border-subtle/70 bg-canvas/40 p-1.5">
-                      {catServices.map((service) => {
-                        const isServiceExpanded = Boolean(expandedServices[service.slug]);
-                        const isLoadingDetail = Boolean(loadingServices[service.slug]);
-                        const primaryItem = mapServiceListItemToPrimaryRegistryItem(service);
-                        const loadedItems = serviceResources[service.slug];
-                        const itemsToRender = loadedItems ?? [primaryItem];
-
-                        return (
-                          <div
-                            key={service.id}
-                            className="rounded-md border border-border-subtle/60 bg-surface/80"
-                          >
-                            {/* Service Row */}
-                            <div className="flex items-center gap-1.5 px-2 py-1.5">
-                              <button
-                                type="button"
-                                onClick={() => toggleService(service.slug)}
-                                aria-expanded={isServiceExpanded}
-                                className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                              >
-                                {isServiceExpanded ? (
-                                  <ChevronDown className="h-3 w-3 shrink-0 text-slate-400" />
-                                ) : (
-                                  <ChevronRight className="h-3 w-3 shrink-0 text-slate-400" />
-                                )}
-                                <AwsServiceIcon
-                                  iconKey={service.iconKey}
-                                  categoryIconKey={service.category.iconKey}
-                                  size="sm"
-                                />
-                                <div className="min-w-0 flex-1">
-                                  <p className="truncate text-xs font-medium text-slate-200">
-                                    {service.shortName || service.name}
-                                  </p>
-                                </div>
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => onAddResource(primaryItem)}
-                                aria-label={`Add ${primaryItem.resourceName} to canvas`}
-                                title={`Quick add ${primaryItem.resourceName}`}
-                                className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border-subtle bg-surface-elevated text-slate-300 transition-colors hover:border-sky-400/60 hover:text-sky-400"
-                              >
-                                <Plus className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
-
-                            {/* Expanded Common Resources */}
-                            {isServiceExpanded ? (
-                              <div className="space-y-1 border-t border-border-subtle/60 p-1.5">
-                                {isLoadingDetail ? (
-                                  <div className="flex items-center gap-2 px-2 py-1.5 text-[11px] text-slate-400">
-                                    <Loader2 className="h-3 w-3 animate-spin text-sky-400" />
-                                    <span>Loading resources...</span>
-                                  </div>
-                                ) : (
-                                  itemsToRender.map((item) => (
-                                    <div
-                                      key={item.key}
-                                      draggable
-                                      onDragStart={(e) => handleDragStart(e, item)}
-                                      className="group flex cursor-grab items-start gap-2 rounded-md border border-border-subtle/70 bg-surface-elevated/70 p-2 transition-colors hover:border-sky-400/50 hover:bg-surface-hover active:cursor-grabbing"
-                                    >
-                                      <GripVertical
-                                        className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500 group-hover:text-slate-300"
-                                        aria-hidden="true"
-                                      />
-                                      <AwsServiceIcon
-                                        iconKey={item.iconKey}
-                                        categoryIconKey={item.categoryIconKey}
-                                        size="sm"
-                                      />
-                                      <div className="min-w-0 flex-1">
-                                        <div className="flex items-center justify-between gap-1">
-                                          <p className="truncate text-xs font-medium text-slate-100">
-                                            {item.resourceName}
-                                          </p>
-                                          <button
-                                            type="button"
-                                            onClick={() => onAddResource(item)}
-                                            aria-label={`Add ${item.resourceName} to canvas`}
-                                            title={`Add ${item.resourceName}`}
-                                            className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-border-subtle bg-surface text-slate-300 transition-colors hover:border-sky-400 hover:text-sky-400"
-                                          >
-                                            <Plus className="h-3 w-3" />
-                                          </button>
-                                        </div>
-                                        <span className="mt-0.5 inline-block max-w-full truncate rounded bg-canvas px-1.5 py-0.5 font-mono text-[10px] text-sky-300">
-                                          {item.resourceType}
-                                        </span>
-                                        {item.description ? (
-                                          <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-slate-400">
-                                            {item.description}
-                                          </p>
-                                        ) : null}
-                                      </div>
-                                    </div>
-                                  ))
-                                )}
-                              </div>
-                            ) : null}
+                {isBoundariesExpanded && (
+                  <div className="space-y-1.5 border-t border-purple-500/20 bg-canvas/30 p-2">
+                    {filteredBoundaries.map((item) => (
+                      <div
+                        key={item.key}
+                        draggable
+                        onDragStart={(e) => handleDragStart(e, item)}
+                        className="group flex cursor-grab items-start gap-2 rounded-md border border-purple-500/20 bg-surface-elevated/70 p-2 transition-colors hover:border-purple-400/50 hover:bg-purple-950/30 active:cursor-grabbing"
+                      >
+                        <GripVertical
+                          className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500 group-hover:text-purple-300"
+                          aria-hidden="true"
+                        />
+                        <AwsServiceIcon
+                          serviceSlug={item.serviceSlug}
+                          resourceType={item.resourceType}
+                          iconKey={item.iconKey}
+                          size="sm"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between gap-1">
+                            <p className="truncate text-xs font-semibold text-slate-100">
+                              {item.resourceName}
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => onAddResource(item)}
+                              aria-label={`Add ${item.resourceName} boundary`}
+                              title={`Add ${item.resourceName}`}
+                              className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-purple-500/40 bg-purple-950/40 text-purple-200 transition-colors hover:border-purple-300 hover:text-white"
+                            >
+                              <Plus className="h-3 w-3" />
+                            </button>
                           </div>
-                        );
-                      })}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
+                          <p className="mt-0.5 line-clamp-2 text-[10px] text-slate-400">
+                            {item.description}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Standard AWS Services Catalog */}
+            {visibleCategories.length === 0 && filteredBoundaries.length === 0 ? (
+              <div className="flex flex-col items-center justify-center gap-2 px-4 py-12 text-center">
+                <SearchX className="h-6 w-6 text-slate-500" />
+                <p className="text-xs font-medium text-slate-300">
+                  No matching AWS resources
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  Try a different service name, resource type, or category.
+                </p>
+              </div>
+            ) : (
+              visibleCategories.map((category) => {
+                const catServices = servicesByCategory.get(category.slug) ?? [];
+                const isCategoryExpanded =
+                  Boolean(normalizedQuery) || Boolean(expandedCategories[category.slug]);
+                const accent = getCategoryAccent(category.slug);
+
+                return (
+                  <div
+                    key={category.id}
+                    className="overflow-hidden rounded-lg border border-border-subtle bg-surface-elevated/40"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => toggleCategory(category.slug)}
+                      aria-expanded={isCategoryExpanded}
+                      className="flex w-full items-center justify-between gap-2 px-2.5 py-2 text-left transition-colors hover:bg-surface-hover"
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        {isCategoryExpanded ? (
+                          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                        ) : (
+                          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                        )}
+                        <span
+                          className={cn('h-2 w-2 shrink-0 rounded-full', accent.barClassName)}
+                          aria-hidden="true"
+                        />
+                        <span className="truncate text-xs font-semibold text-slate-200">
+                          {category.name}
+                        </span>
+                      </div>
+                      <span className="shrink-0 rounded bg-canvas px-1.5 py-0.5 text-[10px] font-medium text-slate-400">
+                        {catServices.length}
+                      </span>
+                    </button>
+
+                    {isCategoryExpanded ? (
+                      <div className="space-y-1.5 border-t border-border-subtle bg-canvas/30 p-1.5">
+                        {catServices.map((service) => {
+                          const isServiceExpanded =
+                            Boolean(normalizedQuery) || Boolean(expandedServices[service.slug]);
+                          const loadedResources = serviceResources[service.slug];
+                          const isLoadingSubResources = Boolean(loadingServices[service.slug]);
+
+                          return (
+                            <div
+                              key={service.id}
+                              className="overflow-hidden rounded-md border border-border-subtle/80 bg-surface/70"
+                            >
+                              <div className="flex items-center justify-between gap-1.5 p-2">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleService(service.slug)}
+                                  aria-expanded={isServiceExpanded}
+                                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                                >
+                                  {isServiceExpanded ? (
+                                    <ChevronDown className="h-3 w-3 shrink-0 text-slate-400" />
+                                  ) : (
+                                    <ChevronRight className="h-3 w-3 shrink-0 text-slate-400" />
+                                  )}
+                                  <AwsServiceIcon
+                                    serviceSlug={service.slug}
+                                    iconKey={service.iconKey}
+                                    categoryIconKey={service.category.slug}
+                                    size="sm"
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <p className="truncate text-xs font-medium text-slate-100">
+                                      {service.name}
+                                    </p>
+                                    <p className="truncate font-mono text-[10px] text-slate-400">
+                                      {service.shortName}
+                                    </p>
+                                  </div>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onAddResource(mapServiceListItemToPrimaryRegistryItem(service))
+                                  }
+                                  aria-label={`Add ${service.name} to canvas`}
+                                  title={`Add ${service.name}`}
+                                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border-subtle bg-surface-elevated text-slate-300 transition-colors hover:border-sky-400 hover:text-sky-400"
+                                >
+                                  <Plus className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+
+                              {isServiceExpanded ? (
+                                <div className="space-y-1.5 border-t border-border-subtle/60 bg-canvas/60 p-2">
+                                  {isLoadingSubResources ? (
+                                    <div className="flex items-center justify-center gap-2 py-3 text-[11px] text-slate-400">
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />
+                                      <span>Loading service resource types...</span>
+                                    </div>
+                                  ) : !loadedResources || loadedResources.length === 0 ? (
+                                    <p className="py-1 text-center text-[11px] text-slate-500">
+                                      Primary resource only
+                                    </p>
+                                  ) : (
+                                    loadedResources.map((item) => (
+                                      <div
+                                        key={item.key}
+                                        draggable
+                                        onDragStart={(e) => handleDragStart(e, item)}
+                                        className="group flex cursor-grab items-start gap-2 rounded-md border border-border-subtle/70 bg-surface-elevated/70 p-2 transition-colors hover:border-sky-400/50 hover:bg-surface-hover active:cursor-grabbing"
+                                      >
+                                        <GripVertical
+                                          className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500 group-hover:text-slate-300"
+                                          aria-hidden="true"
+                                        />
+                                        <AwsServiceIcon
+                                          serviceSlug={item.serviceSlug}
+                                          resourceType={item.resourceType}
+                                          iconKey={item.iconKey}
+                                          categoryIconKey={item.categoryIconKey}
+                                          size="sm"
+                                        />
+                                        <div className="min-w-0 flex-1">
+                                          <div className="flex items-center justify-between gap-1">
+                                            <p className="truncate text-xs font-medium text-slate-100">
+                                              {item.resourceName}
+                                            </p>
+                                            <button
+                                              type="button"
+                                              onClick={() => onAddResource(item)}
+                                              aria-label={`Add ${item.resourceName} to canvas`}
+                                              title={`Add ${item.resourceName}`}
+                                              className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-border-subtle bg-surface text-slate-300 transition-colors hover:border-sky-400 hover:text-sky-400"
+                                            >
+                                              <Plus className="h-3 w-3" />
+                                            </button>
+                                          </div>
+                                          <span className="mt-0.5 inline-block max-w-full truncate rounded bg-canvas px-1.5 py-0.5 font-mono text-[10px] text-sky-300">
+                                            {item.resourceType}
+                                          </span>
+                                          {item.description ? (
+                                            <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-slate-400">
+                                              {item.description}
+                                            </p>
+                                          ) : null}
+                                        </div>
+                                      </div>
+                                    ))
+                                  )}
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })
+            )}
           </div>
         )}
       </div>
