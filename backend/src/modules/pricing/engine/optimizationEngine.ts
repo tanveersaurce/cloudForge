@@ -306,17 +306,6 @@ export class CostOptimizationEngine {
     const architecturalRecs = recommendations.filter((r) => r.category !== 'pricing-model');
     const pricingModelRecs = recommendations.filter((r) => r.category === 'pricing-model');
 
-    // P1 — Recommendation Dominance:
-    // Sort architectural recommendations by estimatedMonthlySavings descending so that
-    // when mutually exclusive alternatives conflict, the highest achievable saving is retained
-    // deterministically regardless of input array ordering.
-    const sortedArchitecturalRecs = [...architecturalRecs].sort((a, b) => {
-      if (b.estimatedMonthlySavings !== a.estimatedMonthlySavings) {
-        return b.estimatedMonthlySavings - a.estimatedMonthlySavings;
-      }
-      return a.recommendationId.localeCompare(b.recommendationId);
-    });
-
     interface ResourceState {
       currentCost: number;
       remainingCost: number;
@@ -344,6 +333,118 @@ export class CostOptimizationEngine {
       return state;
     }
 
+    // Helper: Compute effective costs and weights for a recommendation
+    // Fixes partially unknown resource costs by never silently assigning zero weight to unknown resources
+    function computeAllocationCosts(rec: CostOptimizationRecommendation): {
+      effectiveCosts: number[];
+      weights: number[];
+    } {
+      const resourceCount = Math.max(1, rec.affectedResourceIds.length);
+      const equalShareCost = (rec.estimatedCurrentCost || rec.estimatedMonthlySavings) / resourceCount;
+
+      interface CostInfo {
+        resId: string;
+        cost: number;
+        isKnown: boolean;
+      }
+
+      const costInfos: CostInfo[] = rec.affectedResourceIds.map((resId) => {
+        const state = resourceStates.get(resId);
+        if (state !== undefined) {
+          return { resId, cost: state.currentCost, isKnown: true };
+        }
+        if (costLookup.has(resId)) {
+          return { resId, cost: costLookup.get(resId)!, isKnown: true };
+        }
+        return { resId, cost: 0, isKnown: false };
+      });
+
+      const knownItems = costInfos.filter((c) => c.isKnown);
+      const unknownItems = costInfos.filter((c) => !c.isKnown);
+      const sumKnownCosts = knownItems.reduce((sum, c) => sum + c.cost, 0);
+
+      const effectiveCosts: number[] = [];
+      if (unknownItems.length === 0) {
+        for (const item of costInfos) effectiveCosts.push(item.cost);
+      } else if (knownItems.length === 0) {
+        const fallback = rec.estimatedCurrentCost > 0 ? rec.estimatedCurrentCost / resourceCount : equalShareCost;
+        for (let i = 0; i < resourceCount; i++) effectiveCosts.push(fallback);
+      } else {
+        // Partially known: some known, some unknown. Explicit fallback allocation:
+        let unknownFallback: number;
+        if (rec.estimatedCurrentCost > sumKnownCosts) {
+          unknownFallback = (rec.estimatedCurrentCost - sumKnownCosts) / unknownItems.length;
+        } else if (knownItems.length > 0 && sumKnownCosts > 0) {
+          unknownFallback = sumKnownCosts / knownItems.length;
+        } else {
+          unknownFallback = equalShareCost;
+        }
+
+        for (const item of costInfos) {
+          effectiveCosts.push(item.isKnown ? item.cost : unknownFallback);
+        }
+      }
+
+      const totalEffectiveCost = effectiveCosts.reduce((sum, c) => sum + c, 0);
+      const weights: number[] = [];
+      if (totalEffectiveCost > 0 && rec.affectedResourceIds.length > 1) {
+        for (let i = 0; i < rec.affectedResourceIds.length; i++) {
+          weights.push(effectiveCosts[i] / totalEffectiveCost);
+        }
+      } else {
+        for (let i = 0; i < rec.affectedResourceIds.length; i++) {
+          weights.push(1 / resourceCount);
+        }
+      }
+
+      return { effectiveCosts, weights };
+    }
+
+    // Helper: Estimate achievable savings for an architectural recommendation against resource baselines
+    function estimateArchitecturalAchievable(rec: CostOptimizationRecommendation): number {
+      const { effectiveCosts, weights } = computeAllocationCosts(rec);
+
+      const discountRatio =
+        rec.savingsPercentage > 0
+          ? Math.min(1, Math.max(0, rec.savingsPercentage / 100))
+          : rec.estimatedCurrentCost > 0
+            ? Math.min(1, Math.max(0, rec.estimatedMonthlySavings / rec.estimatedCurrentCost))
+            : 0;
+
+      let achievableTotal = 0;
+      for (let i = 0; i < rec.affectedResourceIds.length; i++) {
+        const resId = rec.affectedResourceIds[i];
+        const resBaseline = effectiveCosts[i];
+        const nominalShare = rec.estimatedMonthlySavings * weights[i];
+
+        const state = resourceStates.get(resId);
+        if (state) {
+          const comp = Math.round(state.remainingCost * discountRatio * 100) / 100;
+          achievableTotal += Math.min(state.remainingCost, comp);
+        } else {
+          achievableTotal += Math.min(resBaseline, nominalShare);
+        }
+      }
+
+      return Math.round(Math.min(rec.estimatedMonthlySavings, achievableTotal) * 100) / 100;
+    }
+
+    // Recommendation Dominance:
+    // Sort architectural recommendations by achievable savings descending.
+    // If achievable savings are equal, tie-break by estimatedMonthlySavings descending,
+    // and finally by recommendationId ascending for strict determinism regardless of input order.
+    const sortedArchitecturalRecs = [...architecturalRecs].sort((a, b) => {
+      const achievableA = estimateArchitecturalAchievable(a);
+      const achievableB = estimateArchitecturalAchievable(b);
+      if (Math.abs(achievableB - achievableA) > 0.001) {
+        return achievableB - achievableA;
+      }
+      if (b.estimatedMonthlySavings !== a.estimatedMonthlySavings) {
+        return b.estimatedMonthlySavings - a.estimatedMonthlySavings;
+      }
+      return a.recommendationId.localeCompare(b.recommendationId);
+    });
+
     // 1. Process Architectural Recommendations
     for (const rec of sortedArchitecturalRecs) {
       // Check conflicts (mutually exclusive modifications on same attribute)
@@ -370,30 +471,8 @@ export class CostOptimizationEngine {
         continue;
       }
 
-      // P1 — Cost-Weighted Resource Allocation:
-      const resourceCount = Math.max(1, rec.affectedResourceIds.length);
-      const equalShareCost = (rec.estimatedCurrentCost || rec.estimatedMonthlySavings) / resourceCount;
-
-      const resourceCurrentCosts: number[] = rec.affectedResourceIds.map((resId) => {
-        const state = resourceStates.get(resId);
-        if (state && state.currentCost > 0) return state.currentCost;
-        const known = costLookup.get(resId);
-        if (known !== undefined && known > 0) return known;
-        return 0;
-      });
-
-      const totalKnownCost = resourceCurrentCosts.reduce((sum, c) => sum + c, 0);
-      const weights: number[] = [];
-
-      if (totalKnownCost > 0 && rec.affectedResourceIds.length > 1) {
-        for (let i = 0; i < rec.affectedResourceIds.length; i++) {
-          weights.push(resourceCurrentCosts[i] / totalKnownCost);
-        }
-      } else {
-        for (let i = 0; i < rec.affectedResourceIds.length; i++) {
-          weights.push(1 / resourceCount);
-        }
-      }
+      // Cost-Weighted Resource Allocation with Fallback:
+      const { effectiveCosts, weights } = computeAllocationCosts(rec);
 
       const discountRatio =
         rec.savingsPercentage > 0
@@ -409,7 +488,7 @@ export class CostOptimizationEngine {
         const resId = rec.affectedResourceIds[i];
         const weight = weights[i];
         const nominalSavings = rec.estimatedMonthlySavings * weight;
-        const fallbackCost = rec.estimatedCurrentCost > 0 ? rec.estimatedCurrentCost * weight : equalShareCost;
+        const fallbackCost = effectiveCosts[i];
 
         const isNewResource = !resourceStates.has(resId);
         const state = getOrInitResourceState(resId, fallbackCost);
@@ -424,7 +503,7 @@ export class CostOptimizationEngine {
           }
           recAchievableSavings += allocatedSavings;
         } else {
-          // P0 & P1 — Resource-Level Compounding on individual remainingCost:
+          // Resource-Level Compounding on individual remainingCost:
           const compoundedSavings = Math.round(state.remainingCost * discountRatio * 100) / 100;
           const finalResourceSavings = Math.min(state.remainingCost, compoundedSavings);
           state.remainingCost = Math.max(0, Math.round((state.remainingCost - finalResourceSavings) * 100) / 100);
@@ -452,9 +531,40 @@ export class CostOptimizationEngine {
     }
 
     // 2. Process Pricing Model Recommendations (Savings Plans)
-    // P0 — Multiple Savings Plan Tracking with Resource-Level Commitments
-    // P1 — Recommendation Dominance for Savings Plans (sorted by potential savings descending)
+    // Helper: Estimate achievable savings for a Savings Plan
+    function estimateSpAchievable(spRec: CostOptimizationRecommendation): number {
+      let baseline = 0;
+      const resourceCount = Math.max(1, spRec.affectedResourceIds.length);
+      const equalShare = (spRec.estimatedCurrentCost || 0) / resourceCount;
+
+      for (const resId of spRec.affectedResourceIds) {
+        const state = resourceStates.get(resId);
+        if (state) {
+          baseline += state.remainingCost;
+        } else {
+          const known = costLookup.get(resId);
+          baseline += known !== undefined ? known : equalShare;
+        }
+      }
+
+      let discount = 0;
+      if (typeof spRec.savingsPercentage === 'number' && !isNaN(spRec.savingsPercentage)) {
+        if (spRec.savingsPercentage >= 0 && spRec.savingsPercentage <= 100) {
+          discount = spRec.savingsPercentage;
+        }
+      }
+      const nominal = Math.round(baseline * (discount / 100) * 100) / 100;
+      return Math.round(Math.min(baseline, Math.min(spRec.estimatedMonthlySavings, nominal)) * 100) / 100;
+    }
+
+    // Sort Pricing Model Recommendations by achievable savings descending,
+    // then estimatedMonthlySavings descending, then recommendationId ascending.
     const sortedPricingModelRecs = [...pricingModelRecs].sort((a, b) => {
+      const achievableA = estimateSpAchievable(a);
+      const achievableB = estimateSpAchievable(b);
+      if (Math.abs(achievableB - achievableA) > 0.001) {
+        return achievableB - achievableA;
+      }
       if (b.estimatedMonthlySavings !== a.estimatedMonthlySavings) {
         return b.estimatedMonthlySavings - a.estimatedMonthlySavings;
       }
@@ -484,7 +594,7 @@ export class CostOptimizationEngine {
         continue;
       }
 
-      // P0 — Calculate eligible compute baseline using ONLY the plan's affected resources!
+      // Calculate eligible compute baseline using ONLY the plan's affected resources
       let planEligibleBaseline = 0;
       let hadPriorArchitecturalReductions = false;
 
@@ -507,9 +617,30 @@ export class CostOptimizationEngine {
 
       planEligibleBaseline = Math.round(planEligibleBaseline * 100) / 100;
 
-      // Prevent savings from exceeding eligible baseline
-      const discountPercent = spRec.savingsPercentage > 0 ? spRec.savingsPercentage : 35;
-      const nominalSavings = Math.round(planEligibleBaseline * (discountPercent / 100) * 100) / 100;
+      // Remove Unsafe Default: Validate percentage boundaries (0–100)
+      let effectiveDiscountPct = 0;
+      const rawPct = spRec.savingsPercentage;
+
+      if (rawPct === undefined || rawPct === null || typeof rawPct !== 'number' || isNaN(rawPct)) {
+        overlapNotes.push(
+          `Pricing model recommendation "${spRec.title}" has missing or invalid savingsPercentage (${rawPct}). Expected number between 0 and 100; treated as 0% discount.`,
+        );
+        effectiveDiscountPct = 0;
+      } else if (rawPct < 0) {
+        overlapNotes.push(
+          `Pricing model recommendation "${spRec.title}" has negative savingsPercentage (${rawPct}%). Percentage must be between 0 and 100; treated as 0% discount.`,
+        );
+        effectiveDiscountPct = 0;
+      } else if (rawPct > 100) {
+        overlapNotes.push(
+          `Pricing model recommendation "${spRec.title}" has savingsPercentage exceeding 100% (${rawPct}%). Percentage must be between 0 and 100; treated as 0% discount.`,
+        );
+        effectiveDiscountPct = 0;
+      } else {
+        effectiveDiscountPct = rawPct;
+      }
+
+      const nominalSavings = Math.round(planEligibleBaseline * (effectiveDiscountPct / 100) * 100) / 100;
       const planSavings = Math.min(planEligibleBaseline, nominalSavings);
 
       for (const resId of spRec.affectedResourceIds) {
@@ -523,7 +654,7 @@ export class CostOptimizationEngine {
 
       combinedSavings += planSavings;
 
-      if (hadPriorArchitecturalReductions && planSavings < spRec.estimatedMonthlySavings) {
+      if (hadPriorArchitecturalReductions && planSavings < spRec.estimatedMonthlySavings && effectiveDiscountPct > 0) {
         overlapNotes.push(
           `Savings Plan recommendation adjusted from $${spRec.estimatedMonthlySavings.toFixed(2)} to $${planSavings.toFixed(2)} based on remaining eligible compute baseline of affected resources ($${planEligibleBaseline.toFixed(2)}).`,
         );

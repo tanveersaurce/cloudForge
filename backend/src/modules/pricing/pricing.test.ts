@@ -1473,5 +1473,383 @@ describe('AWS Cost Estimation Engine & Intelligent Optimization (Phase 08)', () 
       // Savings must be clamped to the actual remaining baseline ($25.00)
       expect(analysis.combinedAchievableSavings).toBe(25.0);
     });
+
+    describe('Partially Unknown Resource Costs & Robust Fallback Allocation', () => {
+      it('allocates savings proportionally when all resource costs are known', () => {
+        const resourceCosts = new Map<string, number>([
+          ['ec2-1', 40.0],
+          ['ec2-2', 60.0],
+        ]);
+        const recs = [
+          {
+            recommendationId: 'REC-ALL-KNOWN',
+            title: 'Fleet Optimization',
+            category: 'compute' as const,
+            priority: 'high' as const,
+            affectedResourceIds: ['ec2-1', 'ec2-2'],
+            currentConfiguration: {},
+            proposedConfiguration: {},
+            explanation: '',
+            estimatedCurrentCost: 100.0,
+            estimatedOptimizedCost: 80.0,
+            estimatedMonthlySavings: 20.0,
+            savingsPercentage: 20,
+            currency: 'USD',
+            performanceImpact: 'neutral' as const,
+            securityImpact: 'neutral' as const,
+            availabilityImpact: 'neutral' as const,
+            implementationEffort: 'low' as const,
+            confidenceLevel: 'high' as const,
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending' as const,
+          },
+        ];
+
+        const analysis = CostOptimizationEngine.calculateAchievableSavings(recs, resourceCosts);
+        // ec2-1: 40/100 * 20 = $8.00; ec2-2: 60/100 * 20 = $12.00
+        expect(analysis.combinedAchievableSavings).toBe(20.0);
+      });
+
+      it('allocates savings when one resource is known and one is unknown without assigning zero weight', () => {
+        const resourceCosts = new Map<string, number>([
+          ['ec2-known', 60.0],
+          // ec2-unknown is not in map
+        ]);
+        const recs = [
+          {
+            recommendationId: 'REC-ONE-UNKNOWN',
+            title: 'Cluster Optimization',
+            category: 'compute' as const,
+            priority: 'high' as const,
+            affectedResourceIds: ['ec2-known', 'ec2-unknown'],
+            currentConfiguration: {},
+            proposedConfiguration: {},
+            explanation: '',
+            estimatedCurrentCost: 100.0,
+            estimatedOptimizedCost: 80.0,
+            estimatedMonthlySavings: 20.0,
+            savingsPercentage: 20,
+            currency: 'USD',
+            performanceImpact: 'neutral' as const,
+            securityImpact: 'neutral' as const,
+            availabilityImpact: 'neutral' as const,
+            implementationEffort: 'low' as const,
+            confidenceLevel: 'high' as const,
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending' as const,
+          },
+        ];
+
+        const analysis = CostOptimizationEngine.calculateAchievableSavings(recs, resourceCosts);
+        // Fallback cost for ec2-unknown = $100 - $60 = $40. Total = $100.
+        // ec2-known: 60%, ec2-unknown: 40% (never 0 weight!).
+        // Total savings = 20.0, never exceeds estimatedMonthlySavings or baseline.
+        expect(analysis.combinedAchievableSavings).toBe(20.0);
+      });
+
+      it('allocates savings equally when all resource costs are unknown', () => {
+        const recs = [
+          {
+            recommendationId: 'REC-ALL-UNKNOWN',
+            title: 'Unknown Cluster Optimization',
+            category: 'compute' as const,
+            priority: 'high' as const,
+            affectedResourceIds: ['ec2-u1', 'ec2-u2'],
+            currentConfiguration: {},
+            proposedConfiguration: {},
+            explanation: '',
+            estimatedCurrentCost: 100.0,
+            estimatedOptimizedCost: 70.0,
+            estimatedMonthlySavings: 30.0,
+            savingsPercentage: 30,
+            currency: 'USD',
+            performanceImpact: 'neutral' as const,
+            securityImpact: 'neutral' as const,
+            availabilityImpact: 'neutral' as const,
+            implementationEffort: 'low' as const,
+            confidenceLevel: 'high' as const,
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending' as const,
+          },
+        ];
+
+        const analysis = CostOptimizationEngine.calculateAchievableSavings(recs);
+        // Equal share: $15 each. Total = $30.
+        expect(analysis.combinedAchievableSavings).toBe(30.0);
+      });
+
+      it('handles zero-cost resources by ensuring allocated savings never exceed zero baseline', () => {
+        const resourceCosts = new Map<string, number>([
+          ['iam-zero', 0.0],
+          ['ec2-active', 100.0],
+        ]);
+        const recs = [
+          {
+            recommendationId: 'REC-ZERO-COST-MIXED',
+            title: 'Security and Compute Optimization',
+            category: 'compute' as const,
+            priority: 'medium' as const,
+            affectedResourceIds: ['iam-zero', 'ec2-active'],
+            currentConfiguration: {},
+            proposedConfiguration: {},
+            explanation: '',
+            estimatedCurrentCost: 100.0,
+            estimatedOptimizedCost: 75.0,
+            estimatedMonthlySavings: 25.0,
+            savingsPercentage: 25,
+            currency: 'USD',
+            performanceImpact: 'neutral' as const,
+            securityImpact: 'neutral' as const,
+            availabilityImpact: 'neutral' as const,
+            implementationEffort: 'low' as const,
+            confidenceLevel: 'high' as const,
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending' as const,
+          },
+        ];
+
+        const analysis = CostOptimizationEngine.calculateAchievableSavings(recs, resourceCosts);
+        // iam-zero has 0 cost, ec2-active has $100. ec2-active gets 100% weight ($25), iam-zero gets $0.
+        expect(analysis.combinedAchievableSavings).toBe(25.0);
+
+        // Standalone recommendation solely on zero-cost resource
+        const zeroOnlyRec = [
+          {
+            recommendationId: 'REC-ZERO-STANDALONE',
+            title: 'Delete Free Role',
+            category: 'compute' as const,
+            priority: 'low' as const,
+            affectedResourceIds: ['iam-zero'],
+            currentConfiguration: {},
+            proposedConfiguration: {},
+            explanation: '',
+            estimatedCurrentCost: 0.0,
+            estimatedOptimizedCost: 0.0,
+            estimatedMonthlySavings: 15.0, // claims $15 nominal savings on a $0 resource
+            savingsPercentage: 100,
+            currency: 'USD',
+            performanceImpact: 'neutral' as const,
+            securityImpact: 'neutral' as const,
+            availabilityImpact: 'neutral' as const,
+            implementationEffort: 'low' as const,
+            confidenceLevel: 'low' as const,
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending' as const,
+          },
+        ];
+        const zeroAnalysis = CostOptimizationEngine.calculateAchievableSavings(zeroOnlyRec, resourceCosts);
+        expect(zeroAnalysis.combinedAchievableSavings).toBe(0.0);
+      });
+    });
+
+    describe('Achievable Savings Dominance Selection', () => {
+      it('selects dominant recommendation based on achievable savings rather than nominal savings', () => {
+        const resourceCosts = new Map<string, number>([
+          ['ec2-bottleneck', 15.0],
+          ['ec2-large', 85.0],
+        ]);
+
+        // REC-HIGH-NOMINAL: Claims $50.00 nominal savings, but affects only ec2-bottleneck ($15.00 baseline)
+        // Achievable savings against resource baseline is strictly capped at $15.00.
+        const recHighNominal = {
+          recommendationId: 'REC-HIGH-NOMINAL',
+          title: 'Nominally High Savings Option',
+          category: 'compute' as const,
+          priority: 'high' as const,
+          affectedResourceIds: ['ec2-bottleneck'],
+          currentConfiguration: { instance_type: 't3.small' },
+          proposedConfiguration: { instance_type: 't3.nano' },
+          explanation: '',
+          estimatedCurrentCost: 15.0,
+          estimatedOptimizedCost: 0.0,
+          estimatedMonthlySavings: 50.0, // High nominal claim ($50)
+          savingsPercentage: 100,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        };
+
+        // REC-HIGH-ACHIEVABLE: Claims $35.00 nominal savings across ec2-bottleneck ($15) and ec2-large ($85)
+        // Achievable savings against resource baselines is $35.00 ($35.00 > $15.00).
+        const recHighAchievable = {
+          recommendationId: 'REC-HIGH-ACHIEVABLE',
+          title: 'Achievable High Savings Option',
+          category: 'compute' as const,
+          priority: 'medium' as const,
+          affectedResourceIds: ['ec2-bottleneck', 'ec2-large'],
+          currentConfiguration: { instance_type: 't3.small' },
+          proposedConfiguration: { instance_type: 'c6g.medium' },
+          explanation: '',
+          estimatedCurrentCost: 100.0,
+          estimatedOptimizedCost: 65.0,
+          estimatedMonthlySavings: 35.0, // Lower nominal claim ($35), but fully achievable
+          savingsPercentage: 35,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        };
+
+        // Order 1: [NominalHigh ($50 nom / $15 ach), AchievableHigh ($35 nom / $35 ach)]
+        const analysis1 = CostOptimizationEngine.calculateAchievableSavings([recHighNominal, recHighAchievable], resourceCosts);
+        // Order 2: [AchievableHigh ($35 nom / $35 ach), NominalHigh ($50 nom / $15 ach)]
+        const analysis2 = CostOptimizationEngine.calculateAchievableSavings([recHighAchievable, recHighNominal], resourceCosts);
+
+        // Both orders must select REC-HIGH-ACHIEVABLE ($35.00) and reject REC-HIGH-NOMINAL ($15.00)
+        expect(analysis1.combinedAchievableSavings).toBe(35.0);
+        expect(analysis2.combinedAchievableSavings).toBe(35.0);
+        expect(analysis1.overlapNotes.some((n) => n.includes('mutually exclusive') && n.includes('REC-HIGH-ACHIEVABLE'))).toBe(true);
+      });
+    });
+
+    describe('Savings Plan Percentage Boundary Validation', () => {
+      const resourceCosts = new Map<string, number>([
+        ['ec2-compute', 100.0],
+      ]);
+
+      it('produces zero savings when savingsPercentage is explicitly zero (no 35% fallback)', () => {
+        const recs = [
+          {
+            recommendationId: 'REC-SP-ZERO',
+            title: 'Zero Discount Savings Plan',
+            category: 'pricing-model' as const,
+            priority: 'low' as const,
+            affectedResourceIds: ['ec2-compute'],
+            currentConfiguration: {},
+            proposedConfiguration: {},
+            explanation: '',
+            estimatedCurrentCost: 100.0,
+            estimatedOptimizedCost: 100.0,
+            estimatedMonthlySavings: 0.0,
+            savingsPercentage: 0,
+            currency: 'USD',
+            performanceImpact: 'neutral' as const,
+            securityImpact: 'neutral' as const,
+            availabilityImpact: 'neutral' as const,
+            implementationEffort: 'low' as const,
+            confidenceLevel: 'high' as const,
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending' as const,
+          },
+        ];
+
+        const analysis = CostOptimizationEngine.calculateAchievableSavings(recs, resourceCosts);
+        // Must be exactly $0.00 (not 35% fallback!)
+        expect(analysis.combinedAchievableSavings).toBe(0.0);
+      });
+
+      it('produces zero savings and records warning when savingsPercentage is negative', () => {
+        const recs = [
+          {
+            recommendationId: 'REC-SP-NEG',
+            title: 'Negative Discount Savings Plan',
+            category: 'pricing-model' as const,
+            priority: 'low' as const,
+            affectedResourceIds: ['ec2-compute'],
+            currentConfiguration: {},
+            proposedConfiguration: {},
+            explanation: '',
+            estimatedCurrentCost: 100.0,
+            estimatedOptimizedCost: 100.0,
+            estimatedMonthlySavings: 0.0,
+            savingsPercentage: -15,
+            currency: 'USD',
+            performanceImpact: 'neutral' as const,
+            securityImpact: 'neutral' as const,
+            availabilityImpact: 'neutral' as const,
+            implementationEffort: 'low' as const,
+            confidenceLevel: 'low' as const,
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending' as const,
+          },
+        ];
+
+        const analysis = CostOptimizationEngine.calculateAchievableSavings(recs, resourceCosts);
+        expect(analysis.combinedAchievableSavings).toBe(0.0);
+        expect(analysis.overlapNotes.some((n) => n.includes('negative savingsPercentage (-15%)'))).toBe(true);
+      });
+
+      it('produces zero savings and records warning when savingsPercentage is missing or NaN', () => {
+        const recs = [
+          {
+            recommendationId: 'REC-SP-MISSING',
+            title: 'Missing Percentage Savings Plan',
+            category: 'pricing-model' as const,
+            priority: 'low' as const,
+            affectedResourceIds: ['ec2-compute'],
+            currentConfiguration: {},
+            proposedConfiguration: {},
+            explanation: '',
+            estimatedCurrentCost: 100.0,
+            estimatedOptimizedCost: 100.0,
+            estimatedMonthlySavings: 30.0,
+            savingsPercentage: NaN,
+            currency: 'USD',
+            performanceImpact: 'neutral' as const,
+            securityImpact: 'neutral' as const,
+            availabilityImpact: 'neutral' as const,
+            implementationEffort: 'low' as const,
+            confidenceLevel: 'low' as const,
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending' as const,
+          },
+        ];
+
+        const analysis = CostOptimizationEngine.calculateAchievableSavings(recs, resourceCosts);
+        expect(analysis.combinedAchievableSavings).toBe(0.0);
+        expect(analysis.overlapNotes.some((n) => n.includes('missing or invalid savingsPercentage'))).toBe(true);
+      });
+
+      it('produces zero savings and records warning when savingsPercentage exceeds 100%', () => {
+        const recs = [
+          {
+            recommendationId: 'REC-SP-OVER100',
+            title: 'Over 100 Percent Savings Plan',
+            category: 'pricing-model' as const,
+            priority: 'low' as const,
+            affectedResourceIds: ['ec2-compute'],
+            currentConfiguration: {},
+            proposedConfiguration: {},
+            explanation: '',
+            estimatedCurrentCost: 100.0,
+            estimatedOptimizedCost: 0.0,
+            estimatedMonthlySavings: 150.0,
+            savingsPercentage: 150,
+            currency: 'USD',
+            performanceImpact: 'neutral' as const,
+            securityImpact: 'neutral' as const,
+            availabilityImpact: 'neutral' as const,
+            implementationEffort: 'low' as const,
+            confidenceLevel: 'low' as const,
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending' as const,
+          },
+        ];
+
+        const analysis = CostOptimizationEngine.calculateAchievableSavings(recs, resourceCosts);
+        expect(analysis.combinedAchievableSavings).toBe(0.0);
+        expect(analysis.overlapNotes.some((n) => n.includes('savingsPercentage exceeding 100% (150%)'))).toBe(true);
+      });
+    });
   });
 });
