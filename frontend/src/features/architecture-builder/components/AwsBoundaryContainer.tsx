@@ -42,14 +42,33 @@ export function resolveBoundaryType(
   const metadata = data.metadata || {};
   const explicitType = (metadata.boundaryType as string)?.toLowerCase();
 
+  const isSubnet =
+    resourceType === 'subnet' ||
+    resourceType === 'aws_subnet' ||
+    (explicitType && explicitType.includes('subnet')) ||
+    label.includes('subnet');
+
+  if (isSubnet) {
+    const classification = classifySubnet(data, nodeId, allNodes, allEdges);
+    switch (classification.classification) {
+      case 'database':
+        return 'database-subnet';
+      case 'private':
+        return 'private-subnet';
+      case 'public':
+        return 'public-subnet';
+      case 'isolated':
+        return 'isolated-subnet';
+      case 'unknown':
+      default:
+        return 'unknown-subnet';
+    }
+  }
+
   if (explicitType) {
     if (explicitType.includes('cloud')) return 'aws-cloud';
     if (explicitType.includes('region')) return 'region';
     if (explicitType.includes('az') || explicitType.includes('zone')) return 'availability-zone';
-    if (explicitType.includes('db') || explicitType.includes('database')) return 'database-subnet';
-    if (explicitType.includes('pub')) return 'public-subnet';
-    if (explicitType.includes('priv')) return 'private-subnet';
-    if (explicitType.includes('iso')) return 'isolated-subnet';
     if (explicitType.includes('vpc')) return 'vpc';
   }
 
@@ -66,30 +85,6 @@ export function resolveBoundaryType(
     label.includes('availability zone')
   ) {
     return 'availability-zone';
-  }
-  if (
-    resourceType === 'subnet' ||
-    resourceType === 'aws_subnet' ||
-    label.includes('subnet')
-  ) {
-    const classification = classifySubnet(data, nodeId, allNodes, allEdges);
-    switch (classification.classification) {
-      case 'database':
-        return 'database-subnet';
-      case 'private':
-        return 'private-subnet';
-      case 'public':
-        return 'public-subnet';
-      case 'isolated':
-        return 'isolated-subnet';
-      case 'unknown':
-      default:
-        // If metadata explicitly has a label saying "Subnet", but no route evidence is present yet,
-        // distinguish between unknown or infer from safe hints
-        if (label.includes('public')) return 'public-subnet';
-        if (label.includes('private')) return 'private-subnet';
-        return 'unknown-subnet';
-    }
   }
   if (resourceType === 'vpc' || resourceType === 'aws_vpc' || label.includes('vpc')) {
     return 'vpc';
