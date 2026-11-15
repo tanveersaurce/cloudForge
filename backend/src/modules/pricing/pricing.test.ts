@@ -237,6 +237,61 @@ describe('AWS Cost Estimation Engine & Intelligent Optimization (Phase 08)', () 
       expect(result.missingAssumptions.some((a) => a.includes('instance_type not configured'))).toBe(true);
       expect(result.missingAssumptions.some((a) => a.includes('root_volume_size not configured'))).toBe(true);
     });
+
+    it('ensures backend calculates deterministic benchmark estimates matching frontend client calculator', () => {
+      const assumptions = getDefaultAssumptions();
+      const nodes = [
+        {
+          id: 'ec2-prod',
+          type: 'awsResource',
+          data: {
+            resourceType: 'aws_instance',
+            label: 'Web Server',
+            metadata: { instance_type: 't3.medium', root_volume_size: 30 },
+          },
+        },
+        {
+          id: 'rds-prod',
+          type: 'awsResource',
+          data: {
+            resourceType: 'aws_db_instance',
+            label: 'Production DB',
+            metadata: { instance_class: 'db.t3.medium', multi_az: true, allocated_storage: 100 },
+          },
+        },
+        {
+          id: 'nat-prod',
+          type: 'awsResource',
+          data: {
+            resourceType: 'aws_nat_gateway',
+            label: 'NAT Gateway',
+            metadata: {},
+          },
+        },
+        {
+          id: 's3-prod',
+          type: 'awsResource',
+          data: {
+            resourceType: 'aws_s3_bucket',
+            label: 'Static S3 Bucket',
+            metadata: {},
+          },
+        },
+      ];
+
+      const result = CostCalculator.calculateCost('arch-parity', 'us-east-1', nodes, assumptions);
+
+      const ec2Item = result.resourceItems.find((i) => i.resourceType === 'aws_instance');
+      const rdsItem = result.resourceItems.find((i) => i.resourceType === 'aws_db_instance');
+      const natItem = result.resourceItems.find((i) => i.resourceType === 'aws_nat_gateway');
+      const s3Item = result.resourceItems.find((i) => i.resourceType === 'aws_s3_bucket');
+
+      expect(ec2Item?.monthlyCost).toBe(32.77);
+      expect(rdsItem?.monthlyCost).toBe(122.28);
+      expect(natItem?.monthlyCost).toBe(35.1);
+      expect(s3Item?.monthlyCost).toBe(1.4);
+      expect(result.totalEstimatedMonthly).toBe(191.55);
+    });
   });
 
   describe('Intelligent Cost Optimization Engine', () => {
@@ -407,6 +462,223 @@ describe('AWS Cost Estimation Engine & Intelligent Optimization (Phase 08)', () 
       await expect(
         PricingService.applyOptimization('arch-private', 'user-bob', 'REC-1'),
       ).rejects.toThrow(/access/i);
+    });
+  });
+
+  describe('Optimization Savings Accuracy & Compatibility Engine', () => {
+    it('applies service-specific multipliers accurately instead of a flat rate', () => {
+      // In Tokyo (ap-northeast-1): VPC is 1.38x, EC2 is 1.14x, S3 is 1.087x
+      const vpcRate = getPriceRate('nat_gateway:hour', 'ap-northeast-1');
+      const ec2Rate = getPriceRate('ec2:t3.micro', 'ap-northeast-1');
+      const s3Rate = getPriceRate('s3:standard', 'ap-northeast-1');
+
+      expect(vpcRate?.pricePerUnit).toBeCloseTo(0.045 * 1.38, 4);
+      expect(ec2Rate?.pricePerUnit).toBeCloseTo(0.0104 * 1.14, 4);
+      expect(s3Rate?.pricePerUnit).toBeCloseTo(0.023 * 1.087, 4);
+    });
+
+    it('flags unsupported regions in missingAssumptions and individual resource warnings', () => {
+      const nodes = [
+        {
+          id: 'ec2-unsupported',
+          type: 'awsResource',
+          data: {
+            resourceType: 'aws_instance',
+            label: 'Compute in unsupported region',
+            metadata: { instance_type: 't3.micro', root_volume_size: 20 },
+          },
+        },
+      ];
+
+      const result = CostCalculator.calculateCost(
+        'arch-unsupp',
+        'ap-south-1', // Unsupported region
+        nodes,
+        getDefaultAssumptions(),
+      );
+
+      expect(result.missingAssumptions.some((a) => a.includes('ap-south-1'))).toBe(true);
+      expect(result.resourceItems[0].warnings.some((w) => w.includes('ap-south-1'))).toBe(true);
+      expect(result.resourceItems[0].warnings.some((w) => w.includes('illustrative'))).toBe(true);
+    });
+
+    it('handles incompatible recommendations on the same resource by picking the highest-saving option', () => {
+      const recs = [
+        {
+          recommendationId: 'REC-GRAVITON',
+          title: 'Switch to Graviton t4g.medium',
+          category: 'compute' as const,
+          priority: 'high' as const,
+          affectedResourceIds: ['ec2-1'],
+          currentConfiguration: { instance_type: 't3.medium' },
+          proposedConfiguration: { instance_type: 't4g.medium' },
+          explanation: 'ARM64 compute alternative',
+          estimatedCurrentCost: 30.37,
+          estimatedOptimizedCost: 24.53,
+          estimatedMonthlySavings: 5.84,
+          savingsPercentage: 19,
+          currency: 'USD',
+          performanceImpact: 'improved' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+        {
+          recommendationId: 'REC-AMD',
+          title: 'Switch to AMD t3a.medium',
+          category: 'compute' as const,
+          priority: 'medium' as const,
+          affectedResourceIds: ['ec2-1'],
+          currentConfiguration: { instance_type: 't3.medium' },
+          proposedConfiguration: { instance_type: 't3a.medium' },
+          explanation: 'AMD x86 alternative',
+          estimatedCurrentCost: 30.37,
+          estimatedOptimizedCost: 27.33,
+          estimatedMonthlySavings: 3.04,
+          savingsPercentage: 10,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+      ];
+
+      const analysis = CostOptimizationEngine.calculateAchievableSavings(recs);
+
+      // Incompatible options: both propose instance_type on ec2-1
+      expect(analysis.individualSavingsSum).toBe(8.88);
+      expect(analysis.combinedAchievableSavings).toBe(5.84); // Kept highest saving
+      expect(analysis.hasOverlappingRecommendations).toBe(true);
+      expect(analysis.overlapNotes.some((n) => n.includes('mutually exclusive'))).toBe(true);
+    });
+
+    it('combines compatible recommendations on the same EBS volume sequentially without dropping', () => {
+      const recs = [
+        {
+          recommendationId: 'REC-EBS-DOWNSIZE',
+          title: 'Downsize Overprovisioned EBS Volume from 100GB to 50GB',
+          category: 'storage' as const,
+          priority: 'high' as const,
+          affectedResourceIds: ['ebs-1'],
+          currentConfiguration: { size: 100 },
+          proposedConfiguration: { size: 50 },
+          explanation: 'Downsizing reduces capacity by 50%',
+          estimatedCurrentCost: 10.0,
+          estimatedOptimizedCost: 5.0,
+          estimatedMonthlySavings: 5.0,
+          savingsPercentage: 50,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+        {
+          recommendationId: 'REC-EBS-GP3',
+          title: 'Upgrade EBS Volume from gp2 to gp3',
+          category: 'storage' as const,
+          priority: 'high' as const,
+          affectedResourceIds: ['ebs-1'],
+          currentConfiguration: { volume_type: 'gp2' },
+          proposedConfiguration: { volume_type: 'gp3' },
+          explanation: 'gp3 saves 20% over gp2 per GB',
+          estimatedCurrentCost: 10.0,
+          estimatedOptimizedCost: 8.0,
+          estimatedMonthlySavings: 2.0,
+          savingsPercentage: 20,
+          currency: 'USD',
+          performanceImpact: 'improved' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+      ];
+
+      const analysis = CostOptimizationEngine.calculateAchievableSavings(recs);
+
+      // Compatible: size downsize (50% = $5.00) + gp3 upgrade (20% of remaining $5.00 = $1.00)
+      expect(analysis.individualSavingsSum).toBe(7.0);
+      expect(analysis.combinedAchievableSavings).toBe(6.0); // NOT dropped to 5.0, NOT double-counted to 7.0
+      expect(analysis.hasOverlappingRecommendations).toBe(true);
+      expect(analysis.overlapNotes.some((n) => n.includes('compounded savings'))).toBe(true);
+    });
+
+    it('adjusts Savings Plans to baseline after architectural compute reductions', () => {
+      const recs = [
+        {
+          recommendationId: 'REC-GRAVITON',
+          title: 'Adopt Graviton',
+          category: 'compute' as const,
+          priority: 'high' as const,
+          affectedResourceIds: ['ec2-1'],
+          currentConfiguration: { instance_type: 'm5.large' },
+          proposedConfiguration: { instance_type: 'm6g.large' },
+          explanation: '',
+          estimatedCurrentCost: 70.08,
+          estimatedOptimizedCost: 56.21,
+          estimatedMonthlySavings: 13.87,
+          savingsPercentage: 20,
+          currency: 'USD',
+          performanceImpact: 'improved' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'high' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+        {
+          recommendationId: 'REC-SP',
+          title: 'Compute Savings Plan',
+          category: 'pricing-model' as const,
+          priority: 'medium' as const,
+          affectedResourceIds: ['ec2-1'],
+          currentConfiguration: { pricing_model: 'On-Demand' },
+          proposedConfiguration: { pricing_model: 'Savings Plan' },
+          explanation: '',
+          estimatedCurrentCost: 70.08,
+          estimatedOptimizedCost: 45.55,
+          estimatedMonthlySavings: 24.53, // 35% of 70.08
+          savingsPercentage: 35,
+          currency: 'USD',
+          performanceImpact: 'neutral' as const,
+          securityImpact: 'neutral' as const,
+          availabilityImpact: 'neutral' as const,
+          implementationEffort: 'low' as const,
+          confidenceLevel: 'medium' as const,
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending' as const,
+        },
+      ];
+
+      const analysis = CostOptimizationEngine.calculateAchievableSavings(recs);
+
+      // Post-Graviton compute baseline = 70.08 - 13.87 = 56.21
+      // Adjusted Savings Plan = 56.21 * 0.35 = 19.67
+      // Combined = 13.87 + 19.67 = 33.54
+      expect(analysis.individualSavingsSum).toBe(38.4);
+      expect(analysis.combinedAchievableSavings).toBe(33.54);
+      expect(analysis.hasOverlappingRecommendations).toBe(true);
+      expect(analysis.overlapNotes.some((n) => n.includes('Savings Plan recommendation adjusted'))).toBe(true);
     });
   });
 });

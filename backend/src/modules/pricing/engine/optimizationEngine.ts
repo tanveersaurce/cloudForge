@@ -291,29 +291,125 @@ export class CostOptimizationEngine {
     const architecturalRecs = recommendations.filter((r) => r.category !== 'pricing-model');
     const pricingModelRecs = recommendations.filter((r) => r.category === 'pricing-model');
 
+    const resourceState = new Map<
+      string,
+      {
+        remainingCost: number;
+        modifiedAttributes: Map<string, string>;
+        appliedRecs: CostOptimizationRecommendation[];
+      }
+    >();
+
     let combinedSavings = 0;
-    const processedResourceIds = new Set<string>();
     const overlapNotes: string[] = [];
+    const appliedArchitecturalComputeSavings = new Map<string, number>();
 
     for (const rec of architecturalRecs) {
-      const hasOverlap = rec.affectedResourceIds.some((id) => processedResourceIds.has(id));
-      if (!hasOverlap) {
-        combinedSavings += rec.estimatedMonthlySavings;
-        rec.affectedResourceIds.forEach((id) => processedResourceIds.add(id));
+      let recCanApply = true;
+      let conflictReason = '';
+
+      // Check each affected resource for attribute conflicts (incompatibility)
+      for (const resId of rec.affectedResourceIds) {
+        const state = resourceState.get(resId);
+        if (state) {
+          const proposedKeys = Object.keys(rec.proposedConfiguration || {});
+          for (const key of proposedKeys) {
+            if (state.modifiedAttributes.has(key)) {
+              recCanApply = false;
+              conflictReason = `Recommendation "${rec.title}" is mutually exclusive with "${state.modifiedAttributes.get(key)}" on resource "${resId}" (both modify ${key}). Kept highest-saving recommendation.`;
+              break;
+            }
+          }
+          if (!recCanApply) break;
+        }
+      }
+
+      if (!recCanApply) {
+        overlapNotes.push(conflictReason);
+        continue;
+      }
+
+      // Check if this recommendation affects resources that already had compatible optimizations applied
+      let achievableSavingsForRec = 0;
+      let hasCompoundedAdjustment = false;
+      const affectsAlreadyOptimizedResource = rec.affectedResourceIds.some((id) => resourceState.has(id));
+
+      if (!affectsAlreadyOptimizedResource) {
+        achievableSavingsForRec = rec.estimatedMonthlySavings;
+        for (const resId of rec.affectedResourceIds) {
+          const resBaseline = rec.estimatedCurrentCost || rec.estimatedMonthlySavings;
+          const remaining = Math.max(0, resBaseline - rec.estimatedMonthlySavings);
+          const modAttrs = new Map<string, string>();
+          for (const key of Object.keys(rec.proposedConfiguration || {})) {
+            modAttrs.set(key, rec.title);
+          }
+          resourceState.set(resId, {
+            remainingCost: remaining,
+            modifiedAttributes: modAttrs,
+            appliedRecs: [rec],
+          });
+        }
       } else {
-        overlapNotes.push(
-          `Recommendation "${rec.title}" overlaps with another optimization on resource(s) ${rec.affectedResourceIds.join(', ')}.`,
-        );
+        // Compatible optimization on already-optimized resource(s)
+        for (const resId of rec.affectedResourceIds) {
+          const state = resourceState.get(resId);
+          if (state) {
+            const discountRatio =
+              rec.savingsPercentage > 0
+                ? rec.savingsPercentage / 100
+                : rec.estimatedCurrentCost > 0
+                  ? rec.estimatedMonthlySavings / rec.estimatedCurrentCost
+                  : 0;
+
+            const adjustedResourceSavings = Math.round(state.remainingCost * discountRatio * 100) / 100;
+            state.remainingCost = Math.max(0, state.remainingCost - adjustedResourceSavings);
+            for (const key of Object.keys(rec.proposedConfiguration || {})) {
+              state.modifiedAttributes.set(key, rec.title);
+            }
+            state.appliedRecs.push(rec);
+
+            achievableSavingsForRec += adjustedResourceSavings;
+            hasCompoundedAdjustment = true;
+          } else {
+            const share = rec.estimatedMonthlySavings / rec.affectedResourceIds.length;
+            achievableSavingsForRec += share;
+            const modAttrs = new Map<string, string>();
+            for (const key of Object.keys(rec.proposedConfiguration || {})) {
+              modAttrs.set(key, rec.title);
+            }
+            resourceState.set(resId, {
+              remainingCost: Math.max(0, (rec.estimatedCurrentCost || share) - share),
+              modifiedAttributes: modAttrs,
+              appliedRecs: [rec],
+            });
+          }
+        }
+
+        achievableSavingsForRec = Math.round(achievableSavingsForRec * 100) / 100;
+        if (hasCompoundedAdjustment && achievableSavingsForRec < rec.estimatedMonthlySavings) {
+          overlapNotes.push(
+            `Recommendation "${rec.title}" savings adjusted from $${rec.estimatedMonthlySavings.toFixed(2)} to $${achievableSavingsForRec.toFixed(2)} to account for compounded savings on resource(s) ${rec.affectedResourceIds.join(', ')}.`,
+          );
+        }
+      }
+
+      combinedSavings += achievableSavingsForRec;
+
+      if (rec.category === 'compute') {
+        for (const resId of rec.affectedResourceIds) {
+          const prev = appliedArchitecturalComputeSavings.get(resId) || 0;
+          appliedArchitecturalComputeSavings.set(resId, prev + achievableSavingsForRec);
+        }
       }
     }
 
     for (const rec of pricingModelRecs) {
-      const overlappingComputeRecs = architecturalRecs.filter(
-        (a) => a.category === 'compute' && a.affectedResourceIds.some((id) => rec.affectedResourceIds.includes(id)),
-      );
+      let totalComputeReductions = 0;
+      for (const resId of rec.affectedResourceIds) {
+        totalComputeReductions += appliedArchitecturalComputeSavings.get(resId) || 0;
+      }
 
-      if (overlappingComputeRecs.length > 0) {
-        const totalComputeReductions = overlappingComputeRecs.reduce((s, a) => s + a.estimatedMonthlySavings, 0);
+      if (totalComputeReductions > 0) {
         const adjustedBaseline = Math.max(0, rec.estimatedCurrentCost - totalComputeReductions);
         const adjustedSavings = Math.round(adjustedBaseline * (rec.savingsPercentage / 100) * 100) / 100;
 

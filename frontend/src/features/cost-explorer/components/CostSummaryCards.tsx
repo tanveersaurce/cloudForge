@@ -60,6 +60,11 @@ export const CostSummaryCards: React.FC<CostSummaryCardsProps> = ({ estimate }) 
         </div>
         <div className="text-xs text-emerald-300/80 mt-1">
           {estimate.recommendations.length} optimization opportunities detected
+          {estimate.hasOverlappingRecommendations && (
+            <span className="block text-[11px] text-amber-300/90 mt-0.5">
+              Combined achievable savings (prevents double-counting)
+            </span>
+          )}
         </div>
       </div>
 

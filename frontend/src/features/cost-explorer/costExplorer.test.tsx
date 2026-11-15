@@ -7,6 +7,7 @@ import { CostSummaryCards } from './components/CostSummaryCards';
 import { ServiceBreakdownChart } from './components/ServiceBreakdownChart';
 import { WorkloadAssumptionsModal } from './components/WorkloadAssumptionsModal';
 import {
+  calculateAchievableSavings,
   calculateClientCost,
   DEFAULT_CLIENT_ASSUMPTIONS,
 } from './engine/clientCostCalculator';
@@ -366,6 +367,349 @@ describe('Cost Optimization Section Component', () => {
       expect(result.missingAssumptions.length).toBeGreaterThanOrEqual(2);
       expect(result.missingAssumptions.some((a) => a.includes('instance_type not configured'))).toBe(true);
       expect(result.missingAssumptions.some((a) => a.includes('root_volume_size not configured'))).toBe(true);
+    });
+
+    it('flags unsupported regions in missingAssumptions and individual resource warnings', () => {
+      const node: ArchitectureFlowNode = {
+        id: 'ec2-unsupported',
+        type: 'awsResource',
+        position: { x: 0, y: 0 },
+        data: {
+          serviceId: 'svc-ec2',
+          serviceSlug: 'amazon-ec2',
+          serviceName: 'Amazon EC2',
+          categorySlug: 'compute',
+          categoryName: 'Compute',
+          iconKey: 'ec2',
+          resourceName: 'EC2',
+          resourceType: 'aws_instance',
+          label: 'Unsupported Region Instance',
+          description: '',
+          metadata: { instance_type: 't3.micro', root_volume_size: 20 },
+        },
+      };
+
+      const result = calculateClientCost('arch-unsupp', 'ap-south-1', [node], [], DEFAULT_CLIENT_ASSUMPTIONS);
+
+      expect(result.missingAssumptions.some((a) => a.includes('ap-south-1'))).toBe(true);
+      expect(result.resourceItems[0].warnings.some((w) => w.includes('ap-south-1'))).toBe(true);
+      expect(result.resourceItems[0].warnings.some((w) => w.includes('illustrative'))).toBe(true);
+    });
+
+    it('scales services according to service-specific regional multipliers', () => {
+      const ec2Node: ArchitectureFlowNode = {
+        id: 'ec2-node',
+        type: 'awsResource',
+        position: { x: 0, y: 0 },
+        data: {
+          serviceId: 'svc-ec2',
+          serviceSlug: 'amazon-ec2',
+          serviceName: 'Amazon EC2',
+          categorySlug: 'compute',
+          categoryName: 'Compute',
+          iconKey: 'ec2',
+          resourceName: 'EC2',
+          resourceType: 'aws_instance',
+          label: 'EC2',
+          description: '',
+          metadata: { instance_type: 't3.micro', root_volume_size: 0 },
+        },
+      };
+
+      const natNode: ArchitectureFlowNode = {
+        id: 'nat-node',
+        type: 'awsResource',
+        position: { x: 100, y: 0 },
+        data: {
+          serviceId: 'svc-vpc',
+          serviceSlug: 'amazon-vpc',
+          serviceName: 'Amazon VPC',
+          categorySlug: 'networking-content-delivery',
+          categoryName: 'Networking',
+          iconKey: 'vpc',
+          resourceName: 'NAT',
+          resourceType: 'aws_nat_gateway',
+          label: 'NAT Gateway',
+          description: '',
+          metadata: {},
+        },
+      };
+
+      const tokyo = calculateClientCost('arch-mult', 'ap-northeast-1', [ec2Node, natNode], [], DEFAULT_CLIENT_ASSUMPTIONS);
+      const ec2Item = tokyo.resourceItems.find((i) => i.resourceType === 'aws_instance');
+      const natItem = tokyo.resourceItems.find((i) => i.resourceType === 'aws_nat_gateway');
+
+      // EC2 multiplier in Tokyo is 1.14x, NAT Gateway (VPC) multiplier is 1.38x
+      const ec2ComputeRate = ec2Item?.dimensions[0]?.unitPrice;
+      const natHourlyRate = natItem?.dimensions[0]?.unitPrice;
+
+      expect(ec2ComputeRate).toBeCloseTo(0.0104 * 1.14, 4);
+      expect(natHourlyRate).toBeCloseTo(0.045 * 1.38, 4);
+    });
+
+    it('handles incompatible recommendations by choosing the higher savings option', () => {
+      const recs: CostOptimizationRecommendation[] = [
+        {
+          recommendationId: 'REC-GRAVITON',
+          title: 'Switch to Graviton t4g.medium',
+          category: 'compute',
+          priority: 'high',
+          affectedResourceIds: ['ec2-1'],
+          currentConfiguration: { instance_type: 't3.medium' },
+          proposedConfiguration: { instance_type: 't4g.medium' },
+          explanation: '',
+          estimatedCurrentCost: 30.37,
+          estimatedOptimizedCost: 24.53,
+          estimatedMonthlySavings: 5.84,
+          savingsPercentage: 19,
+          currency: 'USD',
+          performanceImpact: 'improved',
+          securityImpact: 'neutral',
+          availabilityImpact: 'neutral',
+          implementationEffort: 'low',
+          confidenceLevel: 'high',
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending',
+        },
+        {
+          recommendationId: 'REC-AMD',
+          title: 'Switch to AMD t3a.medium',
+          category: 'compute',
+          priority: 'medium',
+          affectedResourceIds: ['ec2-1'],
+          currentConfiguration: { instance_type: 't3.medium' },
+          proposedConfiguration: { instance_type: 't3a.medium' },
+          explanation: '',
+          estimatedCurrentCost: 30.37,
+          estimatedOptimizedCost: 27.33,
+          estimatedMonthlySavings: 3.04,
+          savingsPercentage: 10,
+          currency: 'USD',
+          performanceImpact: 'neutral',
+          securityImpact: 'neutral',
+          availabilityImpact: 'neutral',
+          implementationEffort: 'low',
+          confidenceLevel: 'high',
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending',
+        },
+      ];
+
+      const analysis = calculateAchievableSavings(recs);
+
+      expect(analysis.individualSavingsSum).toBe(8.88);
+      expect(analysis.combinedAchievableSavings).toBe(5.84);
+      expect(analysis.hasOverlappingRecommendations).toBe(true);
+      expect(analysis.overlapNotes.some((n) => n.includes('mutually exclusive'))).toBe(true);
+    });
+
+    it('combines compatible recommendations on the same EBS volume sequentially without dropping', () => {
+      const recs: CostOptimizationRecommendation[] = [
+        {
+          recommendationId: 'REC-DOWNSIZE',
+          title: 'Downsize EBS volume from 100GB to 50GB',
+          category: 'storage',
+          priority: 'high',
+          affectedResourceIds: ['ebs-1'],
+          currentConfiguration: { size: 100 },
+          proposedConfiguration: { size: 50 },
+          explanation: '',
+          estimatedCurrentCost: 10.0,
+          estimatedOptimizedCost: 5.0,
+          estimatedMonthlySavings: 5.0,
+          savingsPercentage: 50,
+          currency: 'USD',
+          performanceImpact: 'neutral',
+          securityImpact: 'neutral',
+          availabilityImpact: 'neutral',
+          implementationEffort: 'low',
+          confidenceLevel: 'high',
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending',
+        },
+        {
+          recommendationId: 'REC-GP3',
+          title: 'Upgrade EBS volume to gp3',
+          category: 'storage',
+          priority: 'high',
+          affectedResourceIds: ['ebs-1'],
+          currentConfiguration: { volume_type: 'gp2' },
+          proposedConfiguration: { volume_type: 'gp3' },
+          explanation: '',
+          estimatedCurrentCost: 10.0,
+          estimatedOptimizedCost: 8.0,
+          estimatedMonthlySavings: 2.0,
+          savingsPercentage: 20,
+          currency: 'USD',
+          performanceImpact: 'improved',
+          securityImpact: 'neutral',
+          availabilityImpact: 'neutral',
+          implementationEffort: 'low',
+          confidenceLevel: 'high',
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending',
+        },
+      ];
+
+      const analysis = calculateAchievableSavings(recs);
+
+      // Downsizing: $5.00 savings. gp3 on remaining $5.00: 20% = $1.00.
+      expect(analysis.individualSavingsSum).toBe(7.0);
+      expect(analysis.combinedAchievableSavings).toBe(6.0);
+      expect(analysis.hasOverlappingRecommendations).toBe(true);
+      expect(analysis.overlapNotes.some((n) => n.includes('compounded savings'))).toBe(true);
+    });
+
+    it('adjusts Savings Plans to baseline after architectural compute reductions', () => {
+      const recs: CostOptimizationRecommendation[] = [
+        {
+          recommendationId: 'REC-GRAVITON',
+          title: 'Adopt Graviton',
+          category: 'compute',
+          priority: 'high',
+          affectedResourceIds: ['ec2-1'],
+          currentConfiguration: { instance_type: 'm5.large' },
+          proposedConfiguration: { instance_type: 'm6g.large' },
+          explanation: '',
+          estimatedCurrentCost: 70.08,
+          estimatedOptimizedCost: 56.21,
+          estimatedMonthlySavings: 13.87,
+          savingsPercentage: 20,
+          currency: 'USD',
+          performanceImpact: 'improved',
+          securityImpact: 'neutral',
+          availabilityImpact: 'neutral',
+          implementationEffort: 'low',
+          confidenceLevel: 'high',
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending',
+        },
+        {
+          recommendationId: 'REC-SP',
+          title: 'Compute Savings Plan',
+          category: 'pricing-model',
+          priority: 'medium',
+          affectedResourceIds: ['ec2-1'],
+          currentConfiguration: { pricing_model: 'On-Demand' },
+          proposedConfiguration: { pricing_model: 'Savings Plan' },
+          explanation: '',
+          estimatedCurrentCost: 70.08,
+          estimatedOptimizedCost: 45.55,
+          estimatedMonthlySavings: 24.53,
+          savingsPercentage: 35,
+          currency: 'USD',
+          performanceImpact: 'neutral',
+          securityImpact: 'neutral',
+          availabilityImpact: 'neutral',
+          implementationEffort: 'low',
+          confidenceLevel: 'medium',
+          requiredAssumptions: [],
+          documentationReferences: [],
+          status: 'pending',
+        },
+      ];
+
+      const analysis = calculateAchievableSavings(recs);
+
+      expect(analysis.individualSavingsSum).toBe(38.4);
+      expect(analysis.combinedAchievableSavings).toBe(33.54);
+      expect(analysis.hasOverlappingRecommendations).toBe(true);
+    });
+
+    it('ensures frontend and backend produce identical deterministic estimates for benchmark inputs', () => {
+      const nodes: ArchitectureFlowNode[] = [
+        {
+          id: 'ec2-prod',
+          type: 'awsResource',
+          position: { x: 0, y: 0 },
+          data: {
+            serviceId: 'svc-ec2',
+            serviceSlug: 'amazon-ec2',
+            serviceName: 'Amazon EC2',
+            categorySlug: 'compute',
+            categoryName: 'Compute',
+            iconKey: 'ec2',
+            resourceName: 'EC2',
+            resourceType: 'aws_instance',
+            label: 'Web Server',
+            description: '',
+            metadata: { instance_type: 't3.medium', root_volume_size: 30 },
+          },
+        },
+        {
+          id: 'rds-prod',
+          type: 'awsResource',
+          position: { x: 100, y: 0 },
+          data: {
+            serviceId: 'svc-rds',
+            serviceSlug: 'amazon-rds',
+            serviceName: 'Amazon RDS',
+            categorySlug: 'database',
+            categoryName: 'Database',
+            iconKey: 'rds',
+            resourceName: 'RDS',
+            resourceType: 'aws_db_instance',
+            label: 'Production DB',
+            description: '',
+            metadata: { instance_class: 'db.t3.medium', multi_az: true, allocated_storage: 100 },
+          },
+        },
+        {
+          id: 'nat-prod',
+          type: 'awsResource',
+          position: { x: 200, y: 0 },
+          data: {
+            serviceId: 'svc-vpc',
+            serviceSlug: 'amazon-vpc',
+            serviceName: 'Amazon VPC',
+            categorySlug: 'networking-content-delivery',
+            categoryName: 'Networking',
+            iconKey: 'vpc',
+            resourceName: 'NAT',
+            resourceType: 'aws_nat_gateway',
+            label: 'NAT Gateway',
+            description: '',
+            metadata: {},
+          },
+        },
+        {
+          id: 's3-prod',
+          type: 'awsResource',
+          position: { x: 300, y: 0 },
+          data: {
+            serviceId: 'svc-s3',
+            serviceSlug: 'amazon-s3',
+            serviceName: 'Amazon S3',
+            categorySlug: 'storage',
+            categoryName: 'Storage',
+            iconKey: 's3',
+            resourceName: 'S3',
+            resourceType: 'aws_s3_bucket',
+            label: 'Static S3 Bucket',
+            description: '',
+            metadata: {},
+          },
+        },
+      ];
+
+      const result = calculateClientCost('arch-parity', 'us-east-1', nodes, [], DEFAULT_CLIENT_ASSUMPTIONS);
+
+      // Verify exact component costs
+      const ec2Item = result.resourceItems.find((i) => i.resourceType === 'aws_instance');
+      const rdsItem = result.resourceItems.find((i) => i.resourceType === 'aws_db_instance');
+      const natItem = result.resourceItems.find((i) => i.resourceType === 'aws_nat_gateway');
+      const s3Item = result.resourceItems.find((i) => i.resourceType === 'aws_s3_bucket');
+
+      expect(ec2Item?.monthlyCost).toBe(32.77);
+      expect(rdsItem?.monthlyCost).toBe(122.28);
+      expect(natItem?.monthlyCost).toBe(35.1);
+      expect(s3Item?.monthlyCost).toBe(1.4);
+      expect(result.totalEstimatedMonthly).toBe(191.55);
     });
   });
 });

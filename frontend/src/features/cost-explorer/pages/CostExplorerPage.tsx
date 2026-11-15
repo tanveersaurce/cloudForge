@@ -14,7 +14,7 @@ import { ServiceBreakdownChart } from '../components/ServiceBreakdownChart';
 import { ResourceCostTable } from '../components/ResourceCostTable';
 import { WorkloadAssumptionsModal } from '../components/WorkloadAssumptionsModal';
 import { CostOptimizationSection } from '../components/CostOptimizationSection';
-import { calculateClientCost } from '../engine/clientCostCalculator';
+import { calculateClientCost, isSupportedRegion } from '../engine/clientCostCalculator';
 import { getArchitectureById } from '@/features/architecture-builder/services/architectureService';
 import {
   applyCostOptimizationApi,
@@ -166,6 +166,11 @@ export const CostExplorerPage: React.FC = () => {
           <div className="hidden sm:flex items-center gap-1.5 text-xs font-mono text-slate-400">
             <Globe className="w-3.5 h-3.5 text-slate-500" />
             <span>Region: {estimate?.region || 'us-east-1'}</span>
+            {estimate?.region && !isSupportedRegion(estimate.region) && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                Illustrative
+              </span>
+            )}
           </div>
 
           <button
@@ -195,6 +200,16 @@ export const CostExplorerPage: React.FC = () => {
       <main className="flex-1 p-4 sm:p-6 max-w-7xl w-full mx-auto space-y-6">
         {estimate && (
           <>
+            {/* Unsupported Region Disclaimer Banner */}
+            {!isSupportedRegion(estimate.region) && (
+              <div className="p-3.5 rounded-xl border border-amber-500/30 bg-amber-950/20 flex items-center gap-3 text-xs text-amber-300">
+                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>
+                  <strong>Illustrative Regional Pricing:</strong> AWS Region &quot;{estimate.region}&quot; is not currently calibrated in the regional benchmark catalog. Estimates apply us-east-1 benchmark rates as an illustrative baseline.
+                </span>
+              </div>
+            )}
+
             {/* KPI Summary Cards */}
             <CostSummaryCards estimate={estimate} />
 

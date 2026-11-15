@@ -119,31 +119,62 @@ export const REGION_PRICE_MULTIPLIERS: Record<string, number> = {
 };
 
 export const CLIENT_BASE_RATES: Record<string, number> = {
+  // EC2 Instances (Hourly)
   'ec2:t3.micro': 0.0104,
   'ec2:t3.small': 0.0208,
   'ec2:t3.medium': 0.0416,
   'ec2:t3.large': 0.0832,
+  'ec2:t3.xlarge': 0.1664,
   'ec2:t4g.micro': 0.0084,
   'ec2:t4g.small': 0.0168,
   'ec2:t4g.medium': 0.0336,
   'ec2:t4g.large': 0.0672,
   'ec2:m5.large': 0.096,
   'ec2:m5.xlarge': 0.192,
+  'ec2:m5.2xlarge': 0.384,
   'ec2:m6g.large': 0.077,
+  'ec2:m6g.xlarge': 0.154,
+  'ec2:c5.large': 0.085,
+  'ec2:c5.xlarge': 0.170,
+
+  // RDS Instances (Hourly)
   'rds:db.t3.micro': 0.017,
   'rds:db.t3.small': 0.034,
   'rds:db.t3.medium': 0.068,
   'rds:db.t4g.micro': 0.014,
   'rds:db.t4g.small': 0.028,
   'rds:db.t4g.medium': 0.056,
+  'rds:db.m5.large': 0.171,
+  'rds:db.m5.xlarge': 0.342,
   'rds:storage_gp3': 0.115,
+  'rds:backup_storage': 0.095,
+
+  // EBS Storage (GB-Month)
   'ebs:gp3': 0.08,
   'ebs:gp2': 0.10,
+  'ebs:io2': 0.125,
+  'ebs:io2_iops': 0.065,
+
+  // S3 Storage (GB-Month)
   's3:standard': 0.023,
+  's3:intelligent_frequent': 0.023,
+  's3:intelligent_infrequent': 0.0125,
+  's3:standard_ia': 0.0125,
+  's3:requests_tier1': 0.005,
+
+  // Networking
   'nat_gateway:hour': 0.045,
   'nat_gateway:data': 0.045,
   'alb:hour': 0.0225,
   'alb:lcu_hour': 0.008,
+  'nlb:hour': 0.0225,
+  'cloudfront:data': 0.085,
+  'data_transfer:out_internet': 0.09,
+
+  // Lambda
+  'lambda:requests': 0.20,
+  'lambda:gb_seconds_x86': 0.0000166667,
+  'lambda:gb_seconds_arm': 0.0000133334,
 };
 
 export const DEFAULT_CLIENT_ASSUMPTIONS: WorkloadAssumptions = {
@@ -188,6 +219,9 @@ export function calculateClientCost(
 
     const dimensions: DimensionBreakdown[] = [];
     const warnings: string[] = [];
+    if (!isSupportedRegion(region)) {
+      warnings.push(`Region "${region}" is not calibrated in benchmark catalog; us-east-1 rates applied as illustrative.`);
+    }
     let itemMonthly = 0;
     let serviceCode = 'Other';
     let isAvailable = true;
@@ -301,7 +335,11 @@ export function calculateClientCost(
         );
         const baseS3Rate = CLIENT_BASE_RATES['s3:standard'] ?? 0.023;
         const s3Rate = Math.round(baseS3Rate * s3Mult * 1000000) / 1000000;
+        const baseReqRate = CLIENT_BASE_RATES['s3:requests_tier1'] ?? 0.005;
+        const reqRate = Math.round(baseReqRate * s3Mult * 1000000) / 1000000;
         const storageCost = assumptions.monthlyS3StorageGb * s3Rate;
+        const reqCost = (assumptions.monthlyS3Requests / 1000) * reqRate;
+
         dimensions.push({
           name: `Standard Storage (${assumptions.monthlyS3StorageGb} GB)`,
           unit: 'GB-Mo',
@@ -309,7 +347,14 @@ export function calculateClientCost(
           unitPrice: s3Rate,
           extendedCost: roundMoney(storageCost),
         });
-        itemMonthly += storageCost;
+        dimensions.push({
+          name: `Requests (${assumptions.monthlyS3Requests.toLocaleString()} PUT/GET)`,
+          unit: '1000-Req',
+          quantity: assumptions.monthlyS3Requests / 1000,
+          unitPrice: reqRate,
+          extendedCost: roundMoney(reqCost),
+        });
+        itemMonthly += storageCost + reqCost;
         break;
       }
 
@@ -592,9 +637,40 @@ export function calculateClientCost(
     });
   }
 
-  const potentialMonthlySavings = roundMoney(
-    recommendations.reduce((sum, r) => sum + r.estimatedMonthlySavings, 0),
-  );
+  // 4. Compute Savings Plans (Steady-State Workloads)
+  if (assumptions.monthlyOperatingHours >= 700 && totalMonthly >= 50) {
+    const computeTotal = serviceBreakdown.find((s) => s.serviceCode === 'AmazonEC2')?.monthlyCost || 0;
+    if (computeTotal > 30) {
+      const potentialSavings = roundMoney(computeTotal * 0.35);
+      recommendations.push({
+        recommendationId: 'OPT-PRICING-SAVINGS-PLANS',
+        title: 'Enroll Steady-State Compute in 1-Year Compute Savings Plans',
+        category: 'pricing-model',
+        priority: 'medium',
+        affectedResourceIds: ec2Nodes.map((n) => n.id),
+        currentConfiguration: { pricing_model: 'On-Demand (No Commitment)' },
+        proposedConfiguration: { pricing_model: 'Compute Savings Plan (1-Year No Upfront)' },
+        explanation: 'Workloads running 24x7 (>700 hours/month) achieve approximately 35% lower hourly rates through 1-Year Compute Savings Plans.',
+        estimatedCurrentCost: computeTotal,
+        estimatedOptimizedCost: roundMoney(computeTotal - potentialSavings),
+        estimatedMonthlySavings: potentialSavings,
+        savingsPercentage: 35,
+        currency: 'USD',
+        performanceImpact: 'neutral',
+        securityImpact: 'neutral',
+        availabilityImpact: 'neutral',
+        implementationEffort: 'low',
+        confidenceLevel: 'medium',
+        requiredAssumptions: ['Requires 1-year financial commitment to steady compute utilization baseline.'],
+        documentationReferences: [{ title: 'AWS Savings Plans Documentation', url: 'https://docs.aws.amazon.com/savingsplans/latest/userguide/what-is-savings-plans.html' }],
+        status: 'pending',
+      });
+    }
+  }
+
+  recommendations.sort((a, b) => b.estimatedMonthlySavings - a.estimatedMonthlySavings);
+
+  const savingsAnalysis = calculateAchievableSavings(recommendations);
 
   return {
     architectureId,
@@ -607,8 +683,171 @@ export function calculateClientCost(
     serviceBreakdown,
     resourceItems,
     missingAssumptions,
-    potentialMonthlySavings,
+    potentialMonthlySavings: savingsAnalysis.combinedAchievableSavings,
+    individualSavingsSum: savingsAnalysis.individualSavingsSum,
+    hasOverlappingRecommendations: savingsAnalysis.hasOverlappingRecommendations,
     recommendations,
     calculatedAt: new Date().toISOString(),
+  };
+}
+
+export function calculateAchievableSavings(
+  recommendations: CostOptimizationRecommendation[],
+): {
+  individualSavingsSum: number;
+  combinedAchievableSavings: number;
+  hasOverlappingRecommendations: boolean;
+  overlapNotes: string[];
+} {
+  const individualSavingsSum =
+    Math.round(recommendations.reduce((sum, r) => sum + r.estimatedMonthlySavings, 0) * 100) / 100;
+
+  if (recommendations.length <= 1) {
+    return {
+      individualSavingsSum,
+      combinedAchievableSavings: individualSavingsSum,
+      hasOverlappingRecommendations: false,
+      overlapNotes: [],
+    };
+  }
+
+  const architecturalRecs = recommendations.filter((r) => r.category !== 'pricing-model');
+  const pricingModelRecs = recommendations.filter((r) => r.category === 'pricing-model');
+
+  const resourceState = new Map<
+    string,
+    {
+      remainingCost: number;
+      modifiedAttributes: Map<string, string>;
+      appliedRecs: CostOptimizationRecommendation[];
+    }
+  >();
+
+  let combinedSavings = 0;
+  const overlapNotes: string[] = [];
+  const appliedArchitecturalComputeSavings = new Map<string, number>();
+
+  for (const rec of architecturalRecs) {
+    let recCanApply = true;
+    let conflictReason = '';
+
+    for (const resId of rec.affectedResourceIds) {
+      const state = resourceState.get(resId);
+      if (state) {
+        const proposedKeys = Object.keys(rec.proposedConfiguration || {});
+        for (const key of proposedKeys) {
+          if (state.modifiedAttributes.has(key)) {
+            recCanApply = false;
+            conflictReason = `Recommendation "${rec.title}" is mutually exclusive with "${state.modifiedAttributes.get(key)}" on resource "${resId}" (both modify ${key}). Kept highest-saving recommendation.`;
+            break;
+          }
+        }
+        if (!recCanApply) break;
+      }
+    }
+
+    if (!recCanApply) {
+      overlapNotes.push(conflictReason);
+      continue;
+    }
+
+    let achievableSavingsForRec = 0;
+    let hasCompoundedAdjustment = false;
+    const affectsAlreadyOptimizedResource = rec.affectedResourceIds.some((id) => resourceState.has(id));
+
+    if (!affectsAlreadyOptimizedResource) {
+      achievableSavingsForRec = rec.estimatedMonthlySavings;
+      for (const resId of rec.affectedResourceIds) {
+        const resBaseline = rec.estimatedCurrentCost || rec.estimatedMonthlySavings;
+        const remaining = Math.max(0, resBaseline - rec.estimatedMonthlySavings);
+        const modAttrs = new Map<string, string>();
+        for (const key of Object.keys(rec.proposedConfiguration || {})) {
+          modAttrs.set(key, rec.title);
+        }
+        resourceState.set(resId, {
+          remainingCost: remaining,
+          modifiedAttributes: modAttrs,
+          appliedRecs: [rec],
+        });
+      }
+    } else {
+      for (const resId of rec.affectedResourceIds) {
+        const state = resourceState.get(resId);
+        if (state) {
+          const discountRatio =
+            rec.savingsPercentage > 0
+              ? rec.savingsPercentage / 100
+              : rec.estimatedCurrentCost > 0
+                ? rec.estimatedMonthlySavings / rec.estimatedCurrentCost
+                : 0;
+
+          const adjustedResourceSavings = Math.round(state.remainingCost * discountRatio * 100) / 100;
+          state.remainingCost = Math.max(0, state.remainingCost - adjustedResourceSavings);
+          for (const key of Object.keys(rec.proposedConfiguration || {})) {
+            state.modifiedAttributes.set(key, rec.title);
+          }
+          state.appliedRecs.push(rec);
+
+          achievableSavingsForRec += adjustedResourceSavings;
+          hasCompoundedAdjustment = true;
+        } else {
+          const share = rec.estimatedMonthlySavings / rec.affectedResourceIds.length;
+          achievableSavingsForRec += share;
+          const modAttrs = new Map<string, string>();
+          for (const key of Object.keys(rec.proposedConfiguration || {})) {
+            modAttrs.set(key, rec.title);
+          }
+          resourceState.set(resId, {
+            remainingCost: Math.max(0, (rec.estimatedCurrentCost || share) - share),
+            modifiedAttributes: modAttrs,
+            appliedRecs: [rec],
+          });
+        }
+      }
+
+      achievableSavingsForRec = Math.round(achievableSavingsForRec * 100) / 100;
+      if (hasCompoundedAdjustment && achievableSavingsForRec < rec.estimatedMonthlySavings) {
+        overlapNotes.push(
+          `Recommendation "${rec.title}" savings adjusted from $${rec.estimatedMonthlySavings.toFixed(2)} to $${achievableSavingsForRec.toFixed(2)} to account for compounded savings on resource(s) ${rec.affectedResourceIds.join(', ')}.`,
+        );
+      }
+    }
+
+    combinedSavings += achievableSavingsForRec;
+
+    if (rec.category === 'compute') {
+      for (const resId of rec.affectedResourceIds) {
+        const prev = appliedArchitecturalComputeSavings.get(resId) || 0;
+        appliedArchitecturalComputeSavings.set(resId, prev + achievableSavingsForRec);
+      }
+    }
+  }
+
+  for (const rec of pricingModelRecs) {
+    let totalComputeReductions = 0;
+    for (const resId of rec.affectedResourceIds) {
+      totalComputeReductions += appliedArchitecturalComputeSavings.get(resId) || 0;
+    }
+
+    if (totalComputeReductions > 0) {
+      const adjustedBaseline = Math.max(0, rec.estimatedCurrentCost - totalComputeReductions);
+      const adjustedSavings = Math.round(adjustedBaseline * (rec.savingsPercentage / 100) * 100) / 100;
+
+      combinedSavings += adjustedSavings;
+      overlapNotes.push(
+        `Savings Plan recommendation adjusted from $${rec.estimatedMonthlySavings.toFixed(2)} to $${adjustedSavings.toFixed(2)} to prevent double-counting with Graviton/rights-sizing optimizations.`,
+      );
+    } else {
+      combinedSavings += rec.estimatedMonthlySavings;
+    }
+  }
+
+  const combinedAchievableSavings = Math.round(combinedSavings * 100) / 100;
+
+  return {
+    individualSavingsSum,
+    combinedAchievableSavings,
+    hasOverlappingRecommendations: overlapNotes.length > 0,
+    overlapNotes,
   };
 }

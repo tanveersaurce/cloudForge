@@ -49,6 +49,9 @@ export class CostCalculator {
 
       const dimensions: DimensionBreakdown[] = [];
       const warnings: string[] = [];
+      if (!isSupportedRegion(region)) {
+        warnings.push(`Region "${region}" is not calibrated in benchmark catalog; us-east-1 rates applied as illustrative.`);
+      }
       let itemMonthly = 0;
       let serviceCode = 'Other';
       let isAvailable = true;
