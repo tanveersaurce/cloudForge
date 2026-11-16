@@ -348,6 +348,90 @@ describe('Client Validation Engine', () => {
     const resNat = runClientValidation('arch-nat', [vpcNode, subnetNode, natNode], [badRelEdge, natEdge]);
     expect(resNat.findings.some((f) => f.ruleId === 'NET-005')).toBe(true);
   });
+
+  it('evaluates granular REL-002 backup retention states identically to backend (A3-16)', () => {
+    const makeRdsNode = (val: unknown): ArchitectureFlowNode => ({
+      id: 'rds-client-node',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: {
+        serviceId: 'svc-rds',
+        serviceSlug: 'amazon-rds',
+        serviceName: 'Amazon RDS',
+        categorySlug: 'database',
+        categoryName: 'Database',
+        iconKey: 'rds',
+        resourceName: 'RDS Database',
+        resourceType: 'aws_db_instance',
+        label: 'Test RDS',
+        description: '',
+        metadata: val !== undefined ? { backup_retention_period: val } : {},
+      },
+    });
+
+    const getRel002 = (val: unknown) => {
+      const res = runClientValidation('arch-r', [makeRdsNode(val)], []);
+      return res.findings.filter((f) => f.ruleId === 'REL-002');
+    };
+
+    // 1. undefined -> unknown / medium
+    const fUndef = getRel002(undefined);
+    expect(fUndef).toHaveLength(1);
+    expect(fUndef[0].status).toBe('unknown');
+    expect(fUndef[0].severity).toBe('medium');
+
+    // 2. null -> unknown / medium
+    const fNull = getRel002(null);
+    expect(fNull).toHaveLength(1);
+    expect(fNull[0].status).toBe('unknown');
+
+    // 3. "" -> unknown / medium
+    const fEmpty = getRel002('');
+    expect(fEmpty).toHaveLength(1);
+    expect(fEmpty[0].status).toBe('unknown');
+
+    // 4. 0 -> invalid / high
+    const fZero = getRel002(0);
+    expect(fZero).toHaveLength(1);
+    expect(fZero[0].status).toBe('invalid');
+    expect(fZero[0].severity).toBe('high');
+
+    // 5. non-numeric "invalid" -> invalid / high
+    const fNonNumeric = getRel002('invalid');
+    expect(fNonNumeric).toHaveLength(1);
+    expect(fNonNumeric[0].status).toBe('invalid');
+
+    // 6. fractional 1.5 -> invalid / high
+    const fFrac = getRel002(1.5);
+    expect(fFrac).toHaveLength(1);
+    expect(fFrac[0].status).toBe('invalid');
+
+    // 7. negative -1 -> invalid / high
+    const fNeg = getRel002(-1);
+    expect(fNeg).toHaveLength(1);
+    expect(fNeg[0].status).toBe('invalid');
+
+    // 8. >35 (36) -> invalid / high
+    const fOver35 = getRel002(36);
+    expect(fOver35).toHaveLength(1);
+    expect(fOver35[0].status).toBe('invalid');
+
+    // 9. 1 and 6 -> unknown / medium policy warning
+    const fOne = getRel002(1);
+    expect(fOne).toHaveLength(1);
+    expect(fOne[0].status).toBe('unknown');
+    expect(fOne[0].severity).toBe('medium');
+
+    const fSix = getRel002(6);
+    expect(fSix).toHaveLength(1);
+    expect(fSix[0].status).toBe('unknown');
+    expect(fSix[0].severity).toBe('medium');
+
+    // 10. 7, 35, "7" -> compliant (0 findings)
+    expect(getRel002(7)).toHaveLength(0);
+    expect(getRel002(35)).toHaveLength(0);
+    expect(getRel002('7')).toHaveLength(0);
+  });
 });
 
 describe('Validation Dashboard Drawer Component', () => {

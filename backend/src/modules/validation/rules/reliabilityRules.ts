@@ -57,8 +57,8 @@ export const automatedBackupRetentionRule: ValidationRule = {
     title: 'RDS Automated Backups Enabled',
     category: 'reliability',
     severity: 'high',
-    description: 'RDS databases must configure automated backup retention (greater than 0 days) to prevent permanent data loss.',
-    remediationTemplate: 'Set backup_retention_period to at least 7 days.',
+    description: 'RDS databases must configure automated backup retention (between 7 and 35 days) to prevent permanent data loss.',
+    remediationTemplate: 'Set backup_retention_period to an integer between 7 and 35 days.',
     documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
   },
   evaluate: (ctx): ValidationFinding[] => {
@@ -68,6 +68,7 @@ export const automatedBackupRetentionRule: ValidationRule = {
     for (const rds of rdsInstances) {
       const retention = rds.data.metadata?.backup_retention_period;
 
+      // 1. Missing / null / undefined / empty string -> UNKNOWN
       if (retention === undefined || retention === null || retention === '') {
         findings.push({
           id: `REL-002-unknown-${rds.id}`,
@@ -85,8 +86,15 @@ export const automatedBackupRetentionRule: ValidationRule = {
         continue;
       }
 
-      const numRetention = Number(retention);
-      if (isNaN(numRetention) || numRetention < 0) {
+      // 2. Parse number and validate non-numeric
+      const numRetention =
+        typeof retention === 'number'
+          ? retention
+          : typeof retention === 'string' && retention.trim() !== ''
+            ? Number(retention)
+            : NaN;
+
+      if (isNaN(numRetention)) {
         findings.push({
           id: `REL-002-invalid-${rds.id}`,
           ruleId: 'REL-002',
@@ -95,14 +103,51 @@ export const automatedBackupRetentionRule: ValidationRule = {
           severity: 'high',
           status: 'invalid',
           affectedNodeIds: [rds.id],
-          message: `RDS Instance "${rds.data.label || rds.id}" has invalid backup retention configuration "${retention}".`,
-          description: 'Backup retention period must be a non-negative integer representing snapshot retention in days.',
+          message: `RDS Instance "${rds.data.label || rds.id}" has invalid non-numeric backup retention "${retention}".`,
+          description: 'Backup retention period must be an integer between 7 and 35 days representing snapshot retention in days.',
           remediation: 'Set backup_retention_period to an integer between 7 and 35 days.',
           documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
         });
         continue;
       }
 
+      // 3. Fractional number check
+      if (!Number.isInteger(numRetention)) {
+        findings.push({
+          id: `REL-002-invalid-${rds.id}`,
+          ruleId: 'REL-002',
+          ruleTitle: 'RDS Automated Backups Enabled',
+          category: 'reliability',
+          severity: 'high',
+          status: 'invalid',
+          affectedNodeIds: [rds.id],
+          message: `RDS Instance "${rds.data.label || rds.id}" has fractional backup retention "${retention}". Retention must be a whole number of days.`,
+          description: 'Backup retention period must be an integer representing snapshot retention in whole days.',
+          remediation: 'Set backup_retention_period to a whole integer between 7 and 35 days.',
+          documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
+        });
+        continue;
+      }
+
+      // 4. Negative number check
+      if (numRetention < 0) {
+        findings.push({
+          id: `REL-002-invalid-${rds.id}`,
+          ruleId: 'REL-002',
+          ruleTitle: 'RDS Automated Backups Enabled',
+          category: 'reliability',
+          severity: 'high',
+          status: 'invalid',
+          affectedNodeIds: [rds.id],
+          message: `RDS Instance "${rds.data.label || rds.id}" has negative backup retention (${numRetention} days).`,
+          description: 'Backup retention period cannot be negative.',
+          remediation: 'Set backup_retention_period to an integer between 7 and 35 days.',
+          documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
+        });
+        continue;
+      }
+
+      // 5. Explicitly disabled (0 days)
       if (numRetention === 0) {
         findings.push({
           id: `REL-002-${rds.id}`,
@@ -117,7 +162,46 @@ export const automatedBackupRetentionRule: ValidationRule = {
           remediation: 'Configure a backup retention period of between 7 and 35 days.',
           documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
         });
+        continue;
       }
+
+      // 6. Exceeds AWS maximum of 35 days
+      if (numRetention > 35) {
+        findings.push({
+          id: `REL-002-invalid-${rds.id}`,
+          ruleId: 'REL-002',
+          ruleTitle: 'RDS Automated Backups Enabled',
+          category: 'reliability',
+          severity: 'high',
+          status: 'invalid',
+          affectedNodeIds: [rds.id],
+          message: `RDS Instance "${rds.data.label || rds.id}" specifies ${numRetention} days retention, exceeding AWS maximum limit of 35 days.`,
+          description: 'Amazon RDS supports a maximum automated backup retention period of 35 days.',
+          remediation: 'Reduce backup_retention_period to 35 days or fewer, or use AWS Backup for longer retention.',
+          documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
+        });
+        continue;
+      }
+
+      // 7. Below production policy recommendation (1-6 days) -> status: 'unknown', severity: 'medium'
+      if (numRetention >= 1 && numRetention < 7) {
+        findings.push({
+          id: `REL-002-policy-${rds.id}`,
+          ruleId: 'REL-002',
+          ruleTitle: 'RDS Automated Backups Enabled',
+          category: 'reliability',
+          severity: 'medium',
+          status: 'unknown',
+          affectedNodeIds: [rds.id],
+          message: `RDS Instance "${rds.data.label || rds.id}" has backup retention period of ${numRetention} day(s), which is below the recommended 7 days for production workloads.`,
+          description: 'While AWS allows retention periods from 1 to 35 days, CloudForge best practices recommend at least 7 days for production recovery.',
+          remediation: 'Increase backup_retention_period to at least 7 days for production environments.',
+          documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
+        });
+        continue;
+      }
+
+      // 8. 7 to 35 days: fully compliant, no finding generated.
     }
 
     return findings;

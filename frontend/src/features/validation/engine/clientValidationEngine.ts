@@ -21,31 +21,92 @@ export function runClientValidation(
       Boolean(subnet.parentId) &&
       nodes.some((n) => n.id === subnet.parentId && n.data.resourceType === 'aws_vpc');
 
-    const hasVpcEdge = edges.some((edge) => {
+    if (hasParentVpcId) {
+      continue;
+    }
+
+    let hasValidVpcEdge = false;
+    let hasUntypedEdge = false;
+    let hasInvalidRelEdge = false;
+    let connectedVpcLabel = '';
+    let invalidRelType = '';
+
+    for (const edge of edges) {
       const relType = edge.data?.relationshipType;
       const dir = edge.data?.direction;
 
       if (edge.target === subnet.id) {
         const sourceNode = nodes.find((n) => n.id === edge.source);
-        if (sourceNode?.data.resourceType !== 'aws_vpc') return false;
-        if (!relType && dir !== 'target-to-source') return true;
-        if (relType === 'contains' && dir !== 'target-to-source') return true;
-        if ((relType === 'attached-to' || relType === 'depends-on') && dir === 'target-to-source') return true;
-        return false;
+        if (sourceNode?.data.resourceType === 'aws_vpc') {
+          connectedVpcLabel = sourceNode.data.label || sourceNode.id;
+          if (!relType) {
+            hasUntypedEdge = true;
+          } else if (relType === 'contains' && dir !== 'target-to-source') {
+            hasValidVpcEdge = true;
+            break;
+          } else if ((relType === 'attached-to' || relType === 'depends-on') && dir === 'target-to-source') {
+            hasValidVpcEdge = true;
+            break;
+          } else {
+            hasInvalidRelEdge = true;
+            invalidRelType = relType;
+          }
+        }
       }
 
       if (edge.source === subnet.id) {
         const targetNode = nodes.find((n) => n.id === edge.target);
-        if (targetNode?.data.resourceType !== 'aws_vpc') return false;
-        if ((relType === 'attached-to' || relType === 'depends-on') && dir !== 'target-to-source') return true;
-        if (relType === 'contains' && dir === 'target-to-source') return true;
-        return false;
+        if (targetNode?.data.resourceType === 'aws_vpc') {
+          connectedVpcLabel = targetNode.data.label || targetNode.id;
+          if (!relType) {
+            hasUntypedEdge = true;
+          } else if ((relType === 'attached-to' || relType === 'depends-on') && dir !== 'target-to-source') {
+            hasValidVpcEdge = true;
+            break;
+          } else if (relType === 'contains' && dir === 'target-to-source') {
+            hasValidVpcEdge = true;
+            break;
+          } else {
+            hasInvalidRelEdge = true;
+            invalidRelType = relType;
+          }
+        }
       }
+    }
 
-      return false;
-    });
+    if (hasValidVpcEdge) {
+      continue;
+    }
 
-    if (!hasParentVpcId && !hasVpcEdge) {
+    if (hasUntypedEdge) {
+      findings.push({
+        id: `STRUCT-001-${subnet.id}`,
+        ruleId: 'STRUCT-001',
+        ruleTitle: 'Subnet Must Belong to a VPC',
+        category: 'structural',
+        severity: 'critical',
+        status: 'invalid',
+        affectedNodeIds: [subnet.id],
+        message: `Subnet "${subnet.data.label || subnet.id}" is connected to VPC "${connectedVpcLabel}" by an edge without a defined relationship type.`,
+        description: 'Untyped connections do not satisfy VPC containment. A "contains" relationship from VPC to Subnet is required.',
+        remediation: 'Configure the connection with relationshipType: "contains" and direction: "source-to-target".',
+        documentationUrl: 'https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Subnets.html',
+      });
+    } else if (hasInvalidRelEdge) {
+      findings.push({
+        id: `STRUCT-001-${subnet.id}`,
+        ruleId: 'STRUCT-001',
+        ruleTitle: 'Subnet Must Belong to a VPC',
+        category: 'structural',
+        severity: 'critical',
+        status: 'invalid',
+        affectedNodeIds: [subnet.id],
+        message: `Subnet "${subnet.data.label || subnet.id}" has an invalid "${invalidRelType}" relationship with VPC "${connectedVpcLabel}".`,
+        description: 'A Subnet must have a "contains" relationship from its enclosing VPC or an "attached-to" relationship to the VPC.',
+        remediation: 'Change the relationship type to "contains" (VPC -> Subnet) or "attached-to" (Subnet -> VPC).',
+        documentationUrl: 'https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Subnets.html',
+      });
+    } else {
       findings.push({
         id: `STRUCT-001-${subnet.id}`,
         ruleId: 'STRUCT-001',
@@ -70,31 +131,67 @@ export function runClientValidation(
       Boolean(candidate.parentId) &&
       nodes.some((n) => n.id === candidate.parentId && n.data.resourceType === 'aws_subnet');
 
-    const hasSubnetEdge = edges.some((edge) => {
+    if (hasParentSubnetId) {
+      continue;
+    }
+
+    let hasValidSubnetEdge = false;
+    let hasUntypedEdge = false;
+    let hasInvalidRelEdge = false;
+    let connectedSubnetLabel = '';
+    let invalidRelType = '';
+
+    for (const edge of edges) {
       const relType = edge.data?.relationshipType;
       const dir = edge.data?.direction;
 
       if (edge.target === candidate.id) {
         const sourceNode = nodes.find((n) => n.id === edge.source);
-        if (sourceNode?.data.resourceType !== 'aws_subnet') return false;
-        if (!relType && dir !== 'target-to-source') return true;
-        if (relType === 'contains' && dir !== 'target-to-source') return true;
-        if ((relType === 'attached-to' || relType === 'depends-on') && dir === 'target-to-source') return true;
-        return false;
+        if (sourceNode?.data.resourceType === 'aws_subnet') {
+          connectedSubnetLabel = sourceNode.data.label || sourceNode.id;
+          if (!relType) {
+            hasUntypedEdge = true;
+          } else if (relType === 'contains' && dir !== 'target-to-source') {
+            hasValidSubnetEdge = true;
+            break;
+          } else if ((relType === 'attached-to' || relType === 'depends-on') && dir === 'target-to-source') {
+            hasValidSubnetEdge = true;
+            break;
+          } else {
+            hasInvalidRelEdge = true;
+            invalidRelType = relType;
+          }
+        }
       }
 
       if (edge.source === candidate.id) {
         const targetNode = nodes.find((n) => n.id === edge.target);
-        if (targetNode?.data.resourceType !== 'aws_subnet') return false;
-        if ((relType === 'attached-to' || relType === 'depends-on') && dir !== 'target-to-source') return true;
-        if (relType === 'contains' && dir === 'target-to-source') return true;
-        return false;
+        if (targetNode?.data.resourceType === 'aws_subnet') {
+          connectedSubnetLabel = targetNode.data.label || targetNode.id;
+          if (!relType) {
+            hasUntypedEdge = true;
+          } else if ((relType === 'attached-to' || relType === 'depends-on') && dir !== 'target-to-source') {
+            hasValidSubnetEdge = true;
+            break;
+          } else if (relType === 'contains' && dir === 'target-to-source') {
+            hasValidSubnetEdge = true;
+            break;
+          } else {
+            hasInvalidRelEdge = true;
+            invalidRelType = relType;
+          }
+        }
       }
+    }
 
-      return false;
-    });
+    if (hasValidSubnetEdge) {
+      continue;
+    }
 
-    if (!hasParentSubnetId && !hasSubnetEdge) {
+    const resourceName = candidate.data.resourceName || candidate.data.resourceType;
+    const candidateLabel = candidate.data.label || candidate.id;
+
+    if (hasUntypedEdge) {
       findings.push({
         id: `STRUCT-002-${candidate.id}`,
         ruleId: 'STRUCT-002',
@@ -103,7 +200,35 @@ export function runClientValidation(
         severity: 'high',
         status: 'invalid',
         affectedNodeIds: [candidate.id],
-        message: `${candidate.data.resourceName || candidate.data.resourceType} "${candidate.data.label || candidate.id}" is not placed in a Subnet.`,
+        message: `${resourceName} "${candidateLabel}" is connected to Subnet "${connectedSubnetLabel}" by an edge without a defined relationship type.`,
+        description: 'Untyped connections do not satisfy subnet placement. An explicit "contains" or "attached-to" relationship is required.',
+        remediation: 'Configure the connection with relationshipType: "contains" (Subnet -> Resource) or "attached-to" (Resource -> Subnet).',
+        documentationUrl: 'https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-vpc.html',
+      });
+    } else if (hasInvalidRelEdge) {
+      findings.push({
+        id: `STRUCT-002-${candidate.id}`,
+        ruleId: 'STRUCT-002',
+        ruleTitle: 'Compute & DB Resources Must Reside in a Subnet',
+        category: 'structural',
+        severity: 'high',
+        status: 'invalid',
+        affectedNodeIds: [candidate.id],
+        message: `${resourceName} "${candidateLabel}" has an invalid "${invalidRelType}" relationship with Subnet "${connectedSubnetLabel}".`,
+        description: 'A resource in a Subnet requires a "contains" placement relationship from the Subnet or an "attached-to" / "depends-on" relationship.',
+        remediation: 'Update the relationship type to "contains" from Subnet to resource or "attached-to" from resource to Subnet.',
+        documentationUrl: 'https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-vpc.html',
+      });
+    } else {
+      findings.push({
+        id: `STRUCT-002-${candidate.id}`,
+        ruleId: 'STRUCT-002',
+        ruleTitle: 'Compute & DB Resources Must Reside in a Subnet',
+        category: 'structural',
+        severity: 'high',
+        status: 'invalid',
+        affectedNodeIds: [candidate.id],
+        message: `${resourceName} "${candidateLabel}" is not placed in a Subnet.`,
         description: 'EC2, RDS, and NAT Gateway instances require an active VPC subnet placement to receive an ENI and IP address.',
         remediation: 'Connect an AWS Subnet node to this resource to define its network location.',
         documentationUrl: 'https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-vpc.html',
@@ -114,32 +239,62 @@ export function runClientValidation(
   // STRUCT-003: Internet Gateway Attachment
   const igws = nodes.filter((n) => n.data.resourceType === 'aws_internet_gateway');
   for (const igw of igws) {
-    const hasVpcAttachment = edges.some((edge) => {
+    let hasValidVpcAttachment = false;
+    let hasUntypedEdge = false;
+    let hasInvalidRelEdge = false;
+    let connectedVpcLabel = '';
+    let invalidRelType = '';
+
+    for (const edge of edges) {
       const relType = edge.data?.relationshipType;
       const dir = edge.data?.direction;
 
       if (edge.source === igw.id) {
         const targetNode = nodes.find((n) => n.id === edge.target);
-        if (targetNode?.data.resourceType !== 'aws_vpc') return false;
-        if (!relType && dir !== 'target-to-source') return true;
-        if ((relType === 'attached-to' || relType === 'depends-on') && dir !== 'target-to-source') return true;
-        if (relType === 'contains' && dir === 'target-to-source') return true;
-        return false;
+        if (targetNode?.data.resourceType === 'aws_vpc') {
+          connectedVpcLabel = targetNode.data.label || targetNode.id;
+          if (!relType) {
+            hasUntypedEdge = true;
+          } else if ((relType === 'attached-to' || relType === 'depends-on') && dir !== 'target-to-source') {
+            hasValidVpcAttachment = true;
+            break;
+          } else if (relType === 'contains' && dir === 'target-to-source') {
+            hasValidVpcAttachment = true;
+            break;
+          } else {
+            hasInvalidRelEdge = true;
+            invalidRelType = relType;
+          }
+        }
       }
 
       if (edge.target === igw.id) {
         const sourceNode = nodes.find((n) => n.id === edge.source);
-        if (sourceNode?.data.resourceType !== 'aws_vpc') return false;
-        if (!relType && dir !== 'target-to-source') return true;
-        if ((relType === 'attached-to' || relType === 'contains') && dir !== 'target-to-source') return true;
-        if ((relType === 'attached-to' || relType === 'depends-on') && dir === 'target-to-source') return true;
-        return false;
+        if (sourceNode?.data.resourceType === 'aws_vpc') {
+          connectedVpcLabel = sourceNode.data.label || sourceNode.id;
+          if (!relType) {
+            hasUntypedEdge = true;
+          } else if ((relType === 'attached-to' || relType === 'contains') && dir !== 'target-to-source') {
+            hasValidVpcAttachment = true;
+            break;
+          } else if ((relType === 'attached-to' || relType === 'depends-on') && dir === 'target-to-source') {
+            hasValidVpcAttachment = true;
+            break;
+          } else {
+            hasInvalidRelEdge = true;
+            invalidRelType = relType;
+          }
+        }
       }
+    }
 
-      return false;
-    });
+    if (hasValidVpcAttachment) {
+      continue;
+    }
 
-    if (!hasVpcAttachment) {
+    const igwLabel = igw.data.label || igw.id;
+
+    if (hasUntypedEdge) {
       findings.push({
         id: `STRUCT-003-${igw.id}`,
         ruleId: 'STRUCT-003',
@@ -148,7 +303,35 @@ export function runClientValidation(
         severity: 'high',
         status: 'invalid',
         affectedNodeIds: [igw.id],
-        message: `Internet Gateway "${igw.data.label || igw.id}" is not attached to any VPC.`,
+        message: `Internet Gateway "${igwLabel}" is connected to VPC "${connectedVpcLabel}" by an edge without a defined relationship type.`,
+        description: 'An Internet Gateway requires an explicit "attached-to" relationship to attach to a VPC.',
+        remediation: 'Configure the connection with relationshipType: "attached-to" from Internet Gateway to VPC.',
+        documentationUrl: 'https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Internet_Gateway.html',
+      });
+    } else if (hasInvalidRelEdge) {
+      findings.push({
+        id: `STRUCT-003-${igw.id}`,
+        ruleId: 'STRUCT-003',
+        ruleTitle: 'Internet Gateway Must Attach to a VPC',
+        category: 'structural',
+        severity: 'high',
+        status: 'invalid',
+        affectedNodeIds: [igw.id],
+        message: `Internet Gateway "${igwLabel}" has an invalid "${invalidRelType}" relationship with VPC "${connectedVpcLabel}".`,
+        description: 'An Internet Gateway must be connected to a VPC using an "attached-to" relationship.',
+        remediation: 'Update the relationship type to "attached-to" from Internet Gateway to VPC.',
+        documentationUrl: 'https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Internet_Gateway.html',
+      });
+    } else {
+      findings.push({
+        id: `STRUCT-003-${igw.id}`,
+        ruleId: 'STRUCT-003',
+        ruleTitle: 'Internet Gateway Must Attach to a VPC',
+        category: 'structural',
+        severity: 'high',
+        status: 'invalid',
+        affectedNodeIds: [igw.id],
+        message: `Internet Gateway "${igwLabel}" is not attached to any VPC.`,
         description: 'An unattached Internet Gateway cannot route internet traffic.',
         remediation: 'Connect this Internet Gateway to its destination VPC.',
         documentationUrl: 'https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Internet_Gateway.html',
@@ -299,7 +482,6 @@ export function runClientValidation(
       const dir = e.data?.direction;
 
       if (otherNode.data.resourceType === 'aws_internet_gateway') {
-        if (!relType && dir !== 'target-to-source') return true;
         if (relType === 'routes-to' || relType === 'attached-to') {
           return dir !== 'target-to-source';
         }
@@ -308,10 +490,8 @@ export function runClientValidation(
 
       if (otherNode.data.resourceType === 'aws_route_table') {
         const isValidSubnetRtEdge =
-          !relType ||
-          relType === 'attached-to' ||
-          relType === 'routes-to' ||
-          relType === 'depends-on';
+          (relType === 'attached-to' || relType === 'routes-to' || relType === 'depends-on') &&
+          dir !== 'target-to-source';
         if (!isValidSubnetRtEdge) return false;
 
         return edges.some((rte) => {
@@ -322,7 +502,6 @@ export function runClientValidation(
 
           const rtRelType = rte.data?.relationshipType;
           const rtDir = rte.data?.direction;
-          if (!rtRelType && rtDir !== 'target-to-source') return true;
           return (
             (rtRelType === 'routes-to' || rtRelType === 'depends-on' || rtRelType === 'attached-to') &&
             rtDir !== 'target-to-source'
@@ -507,6 +686,7 @@ export function runClientValidation(
   for (const db of dbNodes) {
     const retention = db.data.metadata?.backup_retention_period;
 
+    // 1. Missing / null / undefined / empty string -> UNKNOWN
     if (retention === undefined || retention === null || retention === '') {
       findings.push({
         id: `REL-002-unknown-${db.id}`,
@@ -524,8 +704,15 @@ export function runClientValidation(
       continue;
     }
 
-    const numRetention = Number(retention);
-    if (isNaN(numRetention) || numRetention < 0) {
+    // 2. Parse number and validate non-numeric
+    const numRetention =
+      typeof retention === 'number'
+        ? retention
+        : typeof retention === 'string' && retention.trim() !== ''
+          ? Number(retention)
+          : NaN;
+
+    if (isNaN(numRetention)) {
       findings.push({
         id: `REL-002-invalid-${db.id}`,
         ruleId: 'REL-002',
@@ -534,14 +721,51 @@ export function runClientValidation(
         severity: 'high',
         status: 'invalid',
         affectedNodeIds: [db.id],
-        message: `RDS Instance "${db.data.label || db.id}" has invalid backup retention configuration "${retention}".`,
-        description: 'Backup retention period must be a non-negative integer representing snapshot retention in days.',
+        message: `RDS Instance "${db.data.label || db.id}" has invalid non-numeric backup retention "${retention}".`,
+        description: 'Backup retention period must be an integer between 7 and 35 days representing snapshot retention in days.',
         remediation: 'Set backup_retention_period to an integer between 7 and 35 days.',
         documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
       });
       continue;
     }
 
+    // 3. Fractional number check
+    if (!Number.isInteger(numRetention)) {
+      findings.push({
+        id: `REL-002-invalid-${db.id}`,
+        ruleId: 'REL-002',
+        ruleTitle: 'RDS Automated Backups Enabled',
+        category: 'reliability',
+        severity: 'high',
+        status: 'invalid',
+        affectedNodeIds: [db.id],
+        message: `RDS Instance "${db.data.label || db.id}" has fractional backup retention "${retention}". Retention must be a whole number of days.`,
+        description: 'Backup retention period must be an integer representing snapshot retention in whole days.',
+        remediation: 'Set backup_retention_period to a whole integer between 7 and 35 days.',
+        documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
+      });
+      continue;
+    }
+
+    // 4. Negative number check
+    if (numRetention < 0) {
+      findings.push({
+        id: `REL-002-invalid-${db.id}`,
+        ruleId: 'REL-002',
+        ruleTitle: 'RDS Automated Backups Enabled',
+        category: 'reliability',
+        severity: 'high',
+        status: 'invalid',
+        affectedNodeIds: [db.id],
+        message: `RDS Instance "${db.data.label || db.id}" has negative backup retention (${numRetention} days).`,
+        description: 'Backup retention period cannot be negative.',
+        remediation: 'Set backup_retention_period to an integer between 7 and 35 days.',
+        documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
+      });
+      continue;
+    }
+
+    // 5. Explicitly disabled (0 days)
     if (numRetention === 0) {
       findings.push({
         id: `REL-002-${db.id}`,
@@ -556,7 +780,46 @@ export function runClientValidation(
         remediation: 'Configure a backup retention period of between 7 and 35 days.',
         documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
       });
+      continue;
     }
+
+    // 6. Exceeds AWS maximum of 35 days
+    if (numRetention > 35) {
+      findings.push({
+        id: `REL-002-invalid-${db.id}`,
+        ruleId: 'REL-002',
+        ruleTitle: 'RDS Automated Backups Enabled',
+        category: 'reliability',
+        severity: 'high',
+        status: 'invalid',
+        affectedNodeIds: [db.id],
+        message: `RDS Instance "${db.data.label || db.id}" specifies ${numRetention} days retention, exceeding AWS maximum limit of 35 days.`,
+        description: 'Amazon RDS supports a maximum automated backup retention period of 35 days.',
+        remediation: 'Reduce backup_retention_period to 35 days or fewer, or use AWS Backup for longer retention.',
+        documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
+      });
+      continue;
+    }
+
+    // 7. Below production policy recommendation (1-6 days) -> status: 'unknown', severity: 'medium'
+    if (numRetention >= 1 && numRetention < 7) {
+      findings.push({
+        id: `REL-002-policy-${db.id}`,
+        ruleId: 'REL-002',
+        ruleTitle: 'RDS Automated Backups Enabled',
+        category: 'reliability',
+        severity: 'medium',
+        status: 'unknown',
+        affectedNodeIds: [db.id],
+        message: `RDS Instance "${db.data.label || db.id}" has backup retention period of ${numRetention} day(s), which is below the recommended 7 days for production workloads.`,
+        description: 'While AWS allows retention periods from 1 to 35 days, CloudForge best practices recommend at least 7 days for production recovery.',
+        remediation: 'Increase backup_retention_period to at least 7 days for production environments.',
+        documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
+      });
+      continue;
+    }
+
+    // 8. 7 to 35 days: fully compliant, no finding generated.
   }
 
   // Calculate Summary

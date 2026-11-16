@@ -9,12 +9,16 @@ import type {
 } from './types/validation.types.js';
 
 // Cache for in-memory validation results indexed by architectureId
-interface CachedValidationEntry {
+export interface CachedValidationEntry {
   result: ValidationEngineResult;
   architectureUpdatedAt: string;
+  cachedAt: number;
 }
 
 const validationCache = new Map<string, CachedValidationEntry>();
+const inFlightValidations = new Map<string, Promise<ValidationEngineResult>>();
+const cacheInvalidationTimestamps = new Map<string, number>();
+let globalInvalidatedAt = 0;
 
 export class ValidationService {
   /**
@@ -22,10 +26,20 @@ export class ValidationService {
    * or clears the entire validation cache if no architectureId is provided.
    */
   public static invalidateCache(architectureId?: string): void {
+    const now = Date.now();
     if (architectureId) {
       validationCache.delete(architectureId);
+      for (const key of inFlightValidations.keys()) {
+        if (key.startsWith(`${architectureId}:`)) {
+          inFlightValidations.delete(key);
+        }
+      }
+      cacheInvalidationTimestamps.set(architectureId, now);
     } else {
       validationCache.clear();
+      inFlightValidations.clear();
+      cacheInvalidationTimestamps.clear();
+      globalInvalidatedAt = now;
     }
   }
 
@@ -33,7 +47,7 @@ export class ValidationService {
    * Alias to invalidate entire cache (useful for testing or full resets).
    */
   public static clearCache(): void {
-    validationCache.clear();
+    ValidationService.invalidateCache();
   }
 
   /**
@@ -45,25 +59,32 @@ export class ValidationService {
     return entry.architectureUpdatedAt === currentUpdatedAt.toISOString();
   }
 
-  public static async validateArchitecture(
+  /**
+   * Diagnostic helper: returns whether a validation is currently in flight for architectureId.
+   */
+  public static isValidationInFlight(architectureId: string): boolean {
+    for (const key of inFlightValidations.keys()) {
+      if (key.startsWith(`${architectureId}:`)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Diagnostic helper: returns the cached entry for testing inspection.
+   */
+  public static getCachedEntry(architectureId: string): CachedValidationEntry | undefined {
+    return validationCache.get(architectureId);
+  }
+
+  private static async runValidation(
     architectureId: string,
-    userId: string,
+    architectureUpdatedAt: Date,
+    nodes: RuleExecutionContext['nodes'],
+    edges: RuleExecutionContext['edges'],
+    startTime: number,
   ): Promise<ValidationEngineResult> {
-    const architecture = await prisma.architecture.findUnique({
-      where: { id: architectureId },
-    });
-
-    if (!architecture) {
-      throw ApiError.notFound('Architecture not found');
-    }
-
-    if (architecture.userId !== userId) {
-      throw new ApiError(403, 'You do not have access to this architecture', 'FORBIDDEN');
-    }
-
-    const nodes = (architecture.nodes as unknown as RuleExecutionContext['nodes']) || [];
-    const edges = (architecture.edges as unknown as RuleExecutionContext['edges']) || [];
-
     const context: RuleExecutionContext = {
       architectureId,
       nodes,
@@ -72,13 +93,79 @@ export class ValidationService {
 
     const result = ArchitectureValidationEngine.validate(context);
 
-    // Concurrency protection: Store with the architecture's timestamp at time of validation
+    // Stale write prevention: check if invalidated or updated while in flight
+    const lastInvalidated = Math.max(
+      cacheInvalidationTimestamps.get(architectureId) || 0,
+      globalInvalidatedAt,
+    );
+
+    if (lastInvalidated > startTime) {
+      // Invalidation occurred while validation was executing; discard from cache
+      return result;
+    }
+
+    const existing = validationCache.get(architectureId);
+    if (existing && new Date(existing.architectureUpdatedAt).getTime() > architectureUpdatedAt.getTime()) {
+      // Existing cache entry is newer than this result's snapshot; do not overwrite
+      return result;
+    }
+
+    // Cache the fresh result with execution metadata
     validationCache.set(architectureId, {
       result,
-      architectureUpdatedAt: architecture.updatedAt.toISOString(),
+      architectureUpdatedAt: architectureUpdatedAt.toISOString(),
+      cachedAt: Date.now(),
     });
 
     return result;
+  }
+
+  public static validateArchitecture(
+    architectureId: string,
+    userId: string,
+  ): Promise<ValidationEngineResult> {
+    const inFlightKey = `${architectureId}:${userId}`;
+
+    // In-flight deduplication: return active promise if already executing for this user
+    const active = inFlightValidations.get(inFlightKey);
+    if (active) {
+      return active;
+    }
+
+    let activePromise: Promise<ValidationEngineResult>;
+    const validationPromise = (async () => {
+      const architecture = await prisma.architecture.findUnique({
+        where: { id: architectureId },
+      });
+
+      if (!architecture) {
+        throw ApiError.notFound('Architecture not found');
+      }
+
+      if (architecture.userId !== userId) {
+        throw new ApiError(403, 'You do not have access to this architecture', 'FORBIDDEN');
+      }
+
+      const startTime = Date.now();
+      const nodes = (architecture.nodes as unknown as RuleExecutionContext['nodes']) || [];
+      const edges = (architecture.edges as unknown as RuleExecutionContext['edges']) || [];
+
+      return await ValidationService.runValidation(
+        architectureId,
+        architecture.updatedAt,
+        nodes,
+        edges,
+        startTime,
+      );
+    })().finally(() => {
+      if (inFlightValidations.get(inFlightKey) === activePromise) {
+        inFlightValidations.delete(inFlightKey);
+      }
+    });
+
+    activePromise = validationPromise;
+    inFlightValidations.set(inFlightKey, validationPromise);
+    return validationPromise;
   }
 
   public static async getValidationResults(
@@ -97,33 +184,15 @@ export class ValidationService {
       throw new ApiError(403, 'You do not have access to this architecture', 'FORBIDDEN');
     }
 
-    const cached = validationCache.get(architectureId);
-    // If cache exists and architecture has not been modified since validation, return cached result
-    if (cached && cached.architectureUpdatedAt === architecture.updatedAt.toISOString()) {
-      return cached.result;
+    // Return cached result if fresh and not invalidated
+    if (ValidationService.hasFreshCache(architectureId, architecture.updatedAt)) {
+      const cached = validationCache.get(architectureId);
+      if (cached) {
+        return cached.result;
+      }
     }
 
-    // If cache is missing or stale because architecture changed, re-run validation
-    if (cached) {
-      validationCache.delete(architectureId);
-    }
-
-    const nodes = (architecture.nodes as unknown as RuleExecutionContext['nodes']) || [];
-    const edges = (architecture.edges as unknown as RuleExecutionContext['edges']) || [];
-
-    const context: RuleExecutionContext = {
-      architectureId,
-      nodes,
-      edges,
-    };
-
-    const freshResult = ArchitectureValidationEngine.validate(context);
-    validationCache.set(architectureId, {
-      result: freshResult,
-      architectureUpdatedAt: architecture.updatedAt.toISOString(),
-    });
-
-    return freshResult;
+    return ValidationService.validateArchitecture(architectureId, userId);
   }
 
   public static listRules(): ValidationRuleMetadata[] {

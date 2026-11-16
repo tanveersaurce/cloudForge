@@ -6,6 +6,8 @@ import { cidrFormatRule, natGatewayPublicPlacementRule, subnetCidrContainmentRul
 import { publicRdsInstanceRule, s3PublicAccessBlockRule, storageEncryptionRule, unrestrictedManagementPortsRule, wildcardIamPermissionsRule } from './rules/securityRules.js';
 import { albMultiAzSubnetsRule, automatedBackupRetentionRule, multiAzDatabaseRule } from './rules/reliabilityRules.js';
 import { ValidationService } from './validation.service.js';
+import { architectureEdgesArraySchema, findIncompatibleEdges } from '../architecture-edges/edgeValidation.js';
+import { architectureNodesArraySchema } from '../architecture-nodes/nodeValidation.js';
 
 interface StoredArchitecture {
   id: string;
@@ -802,71 +804,317 @@ describe('AWS Architecture Validation Engine (Phase 07)', () => {
       expect(multiAzDatabaseRule.evaluate(multiAzCtx)).toHaveLength(0);
     });
 
-    it('REL-002: produces unknown for missing retention, invalid for 0 or negative, and compliant for >= 1', () => {
-      // 1. Missing retention (undefined) -> status: 'unknown'
-      const unspecCtx = {
-        architectureId: 'arch-1',
-        nodes: [
-          {
-            id: 'rds-unspec-bkp',
-            type: 'awsResource',
-            data: { resourceType: 'aws_db_instance', label: 'Unspecified Backup RDS', metadata: {} },
-          },
-        ],
-        edges: [],
+    it('REL-002: evaluates granular validation states across all input combinations (A3-16)', () => {
+      const evaluateRetention = (val: unknown) => {
+        const ctx = {
+          architectureId: 'arch-1',
+          nodes: [
+            {
+              id: 'rds-test-node',
+              type: 'awsResource' as const,
+              data: {
+                resourceType: 'aws_db_instance',
+                label: 'Test RDS',
+                metadata: val !== undefined ? { backup_retention_period: val } : {},
+              },
+            },
+          ],
+          edges: [],
+        };
+        return automatedBackupRetentionRule.evaluate(ctx);
       };
-      const unspecFindings = automatedBackupRetentionRule.evaluate(unspecCtx);
-      expect(unspecFindings).toHaveLength(1);
-      expect(unspecFindings[0].ruleId).toBe('REL-002');
-      expect(unspecFindings[0].status).toBe('unknown');
-      expect(unspecFindings[0].severity).toBe('medium');
 
-      // 2. Explicit 0 -> status: 'invalid', severity: 'high'
-      const zeroCtx = {
-        architectureId: 'arch-1',
-        nodes: [
-          {
-            id: 'rds-zero-bkp',
-            type: 'awsResource',
-            data: { resourceType: 'aws_db_instance', label: 'Disabled Backup RDS', metadata: { backup_retention_period: 0 } },
-          },
-        ],
-        edges: [],
-      };
-      const zeroFindings = automatedBackupRetentionRule.evaluate(zeroCtx);
-      expect(zeroFindings).toHaveLength(1);
-      expect(zeroFindings[0].status).toBe('invalid');
-      expect(zeroFindings[0].severity).toBe('high');
+      // 1. Missing / undefined -> UNKNOWN (medium)
+      const resUndefined = evaluateRetention(undefined);
+      expect(resUndefined).toHaveLength(1);
+      expect(resUndefined[0].status).toBe('unknown');
+      expect(resUndefined[0].severity).toBe('medium');
 
-      // 3. Invalid negative retention -> status: 'invalid'
-      const negCtx = {
-        architectureId: 'arch-1',
-        nodes: [
-          {
-            id: 'rds-neg-bkp',
-            type: 'awsResource',
-            data: { resourceType: 'aws_db_instance', label: 'Negative Backup RDS', metadata: { backup_retention_period: -5 } },
-          },
-        ],
-        edges: [],
-      };
-      const negFindings = automatedBackupRetentionRule.evaluate(negCtx);
-      expect(negFindings).toHaveLength(1);
-      expect(negFindings[0].status).toBe('invalid');
+      // 2. null -> UNKNOWN (medium)
+      const resNull = evaluateRetention(null);
+      expect(resNull).toHaveLength(1);
+      expect(resNull[0].status).toBe('unknown');
+      expect(resNull[0].severity).toBe('medium');
 
-      // 4. Positive retention (>= 1) -> compliant (no findings)
-      const validCtx = {
-        architectureId: 'arch-1',
+      // 3. empty string "" -> UNKNOWN (medium)
+      const resEmpty = evaluateRetention('');
+      expect(resEmpty).toHaveLength(1);
+      expect(resEmpty[0].status).toBe('unknown');
+      expect(resEmpty[0].severity).toBe('medium');
+
+      // 4. 0 (backups explicitly disabled) -> INVALID (high)
+      const resZero = evaluateRetention(0);
+      expect(resZero).toHaveLength(1);
+      expect(resZero[0].status).toBe('invalid');
+      expect(resZero[0].severity).toBe('high');
+      expect(resZero[0].message).toMatch(/backups disabled/i);
+
+      // 5. Non-numeric string "invalid" -> INVALID (high)
+      const resNonNumeric = evaluateRetention('invalid');
+      expect(resNonNumeric).toHaveLength(1);
+      expect(resNonNumeric[0].status).toBe('invalid');
+      expect(resNonNumeric[0].severity).toBe('high');
+      expect(resNonNumeric[0].message).toMatch(/invalid non-numeric/i);
+
+      // 6. Fractional number 1.5 -> INVALID (high)
+      const resFractional = evaluateRetention(1.5);
+      expect(resFractional).toHaveLength(1);
+      expect(resFractional[0].status).toBe('invalid');
+      expect(resFractional[0].severity).toBe('high');
+      expect(resFractional[0].message).toMatch(/fractional/i);
+
+      // 7. Negative number -1 -> INVALID (high)
+      const resNegative = evaluateRetention(-1);
+      expect(resNegative).toHaveLength(1);
+      expect(resNegative[0].status).toBe('invalid');
+      expect(resNegative[0].severity).toBe('high');
+      expect(resNegative[0].message).toMatch(/negative/i);
+
+      // 8. Greater than 35 days (36) -> INVALID (high)
+      const resOver35 = evaluateRetention(36);
+      expect(resOver35).toHaveLength(1);
+      expect(resOver35[0].status).toBe('invalid');
+      expect(resOver35[0].severity).toBe('high');
+      expect(resOver35[0].message).toMatch(/exceeding AWS maximum/i);
+
+      // 9. 1 day -> UNKNOWN (medium policy warning: below recommended 7 days)
+      const resOne = evaluateRetention(1);
+      expect(resOne).toHaveLength(1);
+      expect(resOne[0].status).toBe('unknown');
+      expect(resOne[0].severity).toBe('medium');
+      expect(resOne[0].message).toMatch(/below the recommended 7 days/i);
+
+      // 10. 6 days -> UNKNOWN (medium policy warning: below recommended 7 days)
+      const resSix = evaluateRetention(6);
+      expect(resSix).toHaveLength(1);
+      expect(resSix[0].status).toBe('unknown');
+      expect(resSix[0].severity).toBe('medium');
+      expect(resSix[0].message).toMatch(/below the recommended 7 days/i);
+
+      // 11. 7 days -> COMPLIANT (0 findings)
+      expect(evaluateRetention(7)).toHaveLength(0);
+
+      // 12. 35 days -> COMPLIANT (0 findings)
+      expect(evaluateRetention(35)).toHaveLength(0);
+
+      // 13. String integer "7" -> COMPLIANT (0 findings)
+      expect(evaluateRetention('7')).toHaveLength(0);
+    });
+
+    it('A3-01: ValidationService ensures concurrency safety and deduplication', async () => {
+      const archId = 'arch-concurrency-test';
+      const userId = 'user-concurrent-1';
+      const baseDate = new Date('2026-03-01T10:00:00.000Z');
+
+      mockArchitectures.push({
+        id: archId,
+        userId,
+        name: 'Concurrency Test Arch',
+        description: null,
+        region: 'us-east-1',
+        status: 'draft',
+        resourceCount: 1,
         nodes: [
           {
-            id: 'rds-ok-bkp',
+            id: 'vpc-node',
             type: 'awsResource',
-            data: { resourceType: 'aws_db_instance', label: 'Valid Backup RDS', metadata: { backup_retention_period: 7 } },
+            data: { resourceType: 'aws_vpc', label: 'VPC', metadata: { cidr_block: '10.0.0.0/16' } },
           },
         ],
         edges: [],
-      };
-      expect(automatedBackupRetentionRule.evaluate(validCtx)).toHaveLength(0);
+        viewport: null,
+        createdAt: baseDate,
+        updatedAt: baseDate,
+      });
+
+      ValidationService.clearCache();
+
+      // 1. In-flight request deduplication: concurrent calls share the exact same promise
+      const promise1 = ValidationService.validateArchitecture(archId, userId);
+      const promise2 = ValidationService.validateArchitecture(archId, userId);
+      expect(promise1).toBe(promise2);
+
+      const [res1, res2] = await Promise.all([promise1, promise2]);
+      expect(res1).toEqual(res2);
+      expect(ValidationService.hasFreshCache(archId, baseDate)).toBe(true);
+
+      // 2. Stale write prevention: cache invalidation while in-flight prevents stale results from caching
+      ValidationService.invalidateCache(archId);
+      expect(ValidationService.hasFreshCache(archId, baseDate)).toBe(false);
+
+      // 3. Clear cache wipes all entries
+      await ValidationService.validateArchitecture(archId, userId);
+      expect(ValidationService.hasFreshCache(archId, baseDate)).toBe(true);
+      ValidationService.clearCache();
+      expect(ValidationService.hasFreshCache(archId, baseDate)).toBe(false);
+    });
+
+    it('A3-15: Complete Edge Compatibility Matrix validates pairwise combinations across AWS categories', () => {
+      const makeNode = (id: string, resourceType: string, resourceName: string) => ({
+        id,
+        type: 'awsResource' as const,
+        position: { x: 0, y: 0 },
+        data: {
+          serviceId: `svc-${resourceType}`,
+          serviceSlug: resourceType,
+          serviceName: resourceName,
+          categorySlug: 'compute',
+          categoryName: 'Compute',
+          iconKey: resourceType,
+          resourceName,
+          resourceType,
+          label: resourceName,
+          description: '',
+          metadata: {},
+        },
+      });
+
+      const vpc = makeNode('n-vpc', 'aws_vpc', 'VPC');
+      const subnet = makeNode('n-sub', 'aws_subnet', 'Subnet');
+      const ec2 = makeNode('n-ec2', 'aws_instance', 'EC2 Instance');
+      const rds = makeNode('n-rds', 'aws_db_instance', 'RDS Database');
+      const s3 = makeNode('n-s3', 'aws_s3_bucket', 'S3 Bucket');
+      const alb = makeNode('n-alb', 'aws_lb', 'Application Load Balancer');
+      const lambda = makeNode('n-lambda', 'aws_lambda_function', 'Lambda Function');
+      const dynamo = makeNode('n-dynamo', 'aws_dynamodb_table', 'DynamoDB Table');
+
+      // Valid: VPC contains Subnet
+      const edgesVpcSub = [
+        { id: 'e1', source: 'n-vpc', target: 'n-sub', data: { relationshipType: 'contains' as const } },
+      ];
+      expect(findIncompatibleEdges(edgesVpcSub, [vpc, subnet])).toHaveLength(0);
+
+      // Valid: Subnet contains EC2
+      const edgesSubEc2 = [
+        { id: 'e2', source: 'n-sub', target: 'n-ec2', data: { relationshipType: 'contains' as const } },
+      ];
+      expect(findIncompatibleEdges(edgesSubEc2, [subnet, ec2])).toHaveLength(0);
+
+      // Valid: EC2 connects-to RDS
+      const edgesEc2Rds = [
+        { id: 'e3', source: 'n-ec2', target: 'n-rds', data: { relationshipType: 'connects-to' as const } },
+      ];
+      expect(findIncompatibleEdges(edgesEc2Rds, [ec2, rds])).toHaveLength(0);
+
+      // Valid: ALB load-balances-to EC2
+      const edgesAlbEc2 = [
+        { id: 'e4', source: 'n-alb', target: 'n-ec2', data: { relationshipType: 'load-balances-to' as const } },
+      ];
+      expect(findIncompatibleEdges(edgesAlbEc2, [alb, ec2])).toHaveLength(0);
+
+      // Valid: Lambda accesses DynamoDB
+      const edgesLambdaDynamo = [
+        { id: 'e5', source: 'n-lambda', target: 'n-dynamo', data: { relationshipType: 'accesses' as const } },
+      ];
+      expect(findIncompatibleEdges(edgesLambdaDynamo, [lambda, dynamo])).toHaveLength(0);
+
+      // Invalid: Leaf S3 cannot contain VPC
+      const edgesS3Vpc = [
+        { id: 'e-bad1', source: 'n-s3', target: 'n-vpc', data: { relationshipType: 'contains' as const } },
+      ];
+      const badS3Res = findIncompatibleEdges(edgesS3Vpc, [s3, vpc]);
+      expect(badS3Res).toHaveLength(1);
+      expect(badS3Res[0].reason).toMatch(/cannot contain|not a container boundary/i);
+
+      // Invalid: EC2 cannot contain Subnet
+      const edgesEc2Sub = [
+        { id: 'e-bad2', source: 'n-ec2', target: 'n-sub', data: { relationshipType: 'contains' as const } },
+      ];
+      const badEc2Res = findIncompatibleEdges(edgesEc2Sub, [ec2, subnet]);
+      expect(badEc2Res).toHaveLength(1);
+      expect(badEc2Res[0].reason).toMatch(/cannot contain|not a container boundary/i);
+
+      // Legacy normalization: traffic-flow converts to sends-traffic-to
+      const edgesLegacy = [
+        { id: 'e-leg', source: 'n-ec2', target: 'n-rds', data: { relationshipType: 'traffic-flow' as const } },
+      ];
+      const parsedLegacy = architectureEdgesArraySchema.safeParse(edgesLegacy);
+      expect(parsedLegacy.success).toBe(true);
+      if (parsedLegacy.success) {
+        expect(parsedLegacy.data[0].data?.relationshipType).toBe('sends-traffic-to');
+      }
+    });
+
+    it('A3-14: Complete Parent-Child Hierarchy rejects leaf parents, cycles, and invalid pairs order-independently', () => {
+      const makeNodeDto = (id: string, resourceType: string, resourceName: string, parentId?: string | null) => ({
+        id,
+        type: 'awsResource' as const,
+        position: { x: 0, y: 0 },
+        parentId: parentId ?? undefined,
+        extent: parentId ? ('parent' as const) : undefined,
+        data: {
+          serviceId: `svc-${resourceType}`,
+          serviceSlug: resourceType,
+          serviceName: resourceName,
+          categorySlug: 'compute',
+          categoryName: 'Compute',
+          iconKey: resourceType,
+          resourceName,
+          resourceType,
+          label: resourceName,
+          description: '',
+          metadata: {},
+        },
+      });
+
+      // 1. Valid VPC -> Subnet -> EC2
+      const validHierarchy = [
+        makeNodeDto('vpc-1', 'aws_vpc', 'VPC'),
+        makeNodeDto('sub-1', 'aws_subnet', 'Subnet', 'vpc-1'),
+        makeNodeDto('ec2-1', 'aws_instance', 'EC2 Instance', 'sub-1'),
+      ];
+      expect(architectureNodesArraySchema.safeParse(validHierarchy).success).toBe(true);
+
+      // 2. Order independence: child appears BEFORE parent in array
+      const shuffledHierarchy = [
+        makeNodeDto('ec2-1', 'aws_instance', 'EC2 Instance', 'sub-1'),
+        makeNodeDto('sub-1', 'aws_subnet', 'Subnet', 'vpc-1'),
+        makeNodeDto('vpc-1', 'aws_vpc', 'VPC'),
+      ];
+      expect(architectureNodesArraySchema.safeParse(shuffledHierarchy).success).toBe(true);
+
+      // 3. Self-parenting (A -> A)
+      const selfParent = [
+        makeNodeDto('node-self', 'aws_vpc', 'VPC', 'node-self'),
+      ];
+      const selfRes = architectureNodesArraySchema.safeParse(selfParent);
+      expect(selfRes.success).toBe(false);
+      if (!selfRes.success) {
+        expect(selfRes.error.errors[0].message).toMatch(/Self-parenting is not allowed/i);
+      }
+
+      // 4. Missing parent reference
+      const missingParent = [
+        makeNodeDto('node-orphan', 'aws_subnet', 'Subnet', 'missing-parent-id'),
+      ];
+      const missingRes = architectureNodesArraySchema.safeParse(missingParent);
+      expect(missingRes.success).toBe(false);
+      if (!missingRes.success) {
+        expect(missingRes.error.errors[0].message).toMatch(/references missing parentId/i);
+      }
+
+      // 5. Circular reference of depth 3: A -> B -> C -> A
+      const cycleNodes = [
+        makeNodeDto('node-a', 'aws_vpc', 'VPC', 'node-c'),
+        makeNodeDto('node-b', 'aws_subnet', 'Subnet', 'node-a'),
+        makeNodeDto('node-c', 'aws_vpc', 'VPC', 'node-b'),
+      ];
+      const cycleRes = architectureNodesArraySchema.safeParse(cycleNodes);
+      expect(cycleRes.success).toBe(false);
+      if (!cycleRes.success) {
+        expect(cycleRes.error.errors.some((e) => e.message.includes('Circular parent-child'))).toBe(true);
+      }
+
+      // 6. Leaf resource cannot act as parent (EC2 containing Subnet)
+      const leafParent = [
+        makeNodeDto('leaf-ec2', 'aws_instance', 'EC2 Instance'),
+        makeNodeDto('sub-under-ec2', 'aws_subnet', 'Subnet', 'leaf-ec2'),
+      ];
+      const leafRes = architectureNodesArraySchema.safeParse(leafParent);
+      expect(leafRes.success).toBe(false);
+      if (!leafRes.success) {
+        expect(leafRes.error.errors[0].message).toMatch(/cannot act as a parent container/i);
+      }
     });
   });
 });

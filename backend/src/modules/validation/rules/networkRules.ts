@@ -214,7 +214,6 @@ export const natGatewayPublicPlacementRule: ValidationRule = {
 
         // Direct subnet route/connection to IGW
         if (otherNode.data.resourceType === 'aws_internet_gateway') {
-          if (!relType && dir !== 'target-to-source') return true;
           if (relType === 'routes-to' || relType === 'attached-to') {
             return dir !== 'target-to-source';
           }
@@ -224,10 +223,8 @@ export const natGatewayPublicPlacementRule: ValidationRule = {
         // Subnet associated with a Route Table
         if (otherNode.data.resourceType === 'aws_route_table') {
           const isValidSubnetRtEdge =
-            !relType ||
-            relType === 'attached-to' ||
-            relType === 'routes-to' ||
-            relType === 'depends-on';
+            (relType === 'attached-to' || relType === 'routes-to' || relType === 'depends-on') &&
+            dir !== 'target-to-source';
           if (!isValidSubnetRtEdge) return false;
 
           // Check route table edges to IGW
@@ -239,7 +236,6 @@ export const natGatewayPublicPlacementRule: ValidationRule = {
 
             const rtRelType = rte.data?.relationshipType;
             const rtDir = rte.data?.direction;
-            if (!rtRelType && rtDir !== 'target-to-source') return true;
             return (
               (rtRelType === 'routes-to' || rtRelType === 'depends-on' || rtRelType === 'attached-to') &&
               rtDir !== 'target-to-source'
