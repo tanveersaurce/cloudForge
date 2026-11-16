@@ -1,4 +1,4 @@
-import { ArrowRight, Cpu, Network, Server, Zap } from 'lucide-react';
+import { ArrowRight, Brain, Cpu, Network, Server, Zap } from 'lucide-react';
 import { Badge } from '@/components/Badge';
 import { Card, CardHeader } from '@/components/Card';
 import { useUiStore } from '@/store/useUiStore';
@@ -9,6 +9,7 @@ const CATEGORY_ICONS: Record<DashboardQuickStartTemplate['category'], typeof Ser
   Serverless: Zap,
   Networking: Network,
   'Storage & Edge': Cpu,
+  'AI & Social Media': Brain,
 };
 
 interface QuickStartTemplatesSectionProps {

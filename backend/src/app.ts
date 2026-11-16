@@ -58,7 +58,7 @@ export function createApp() {
   app.use('/api/architectures', architectureRouter);
   app.use('/api/validation', validationRouter);
   app.use('/api/pricing', pricingRouter);
-  app.use('/api/terraform', terraformRouter);
+  app.use('/api/architectures', terraformRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

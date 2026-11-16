@@ -26,7 +26,12 @@ export interface DashboardServicePreview {
 export interface DashboardQuickStartTemplate {
   id: string;
   title: string;
-  category: 'Web & Compute' | 'Serverless' | 'Networking' | 'Storage & Edge';
+  category:
+    | 'Web & Compute'
+    | 'Serverless'
+    | 'Networking'
+    | 'Storage & Edge'
+    | 'AI & Social Media';
   description: string;
   serviceCount: number;
   services: string[];
@@ -105,6 +110,20 @@ const STATIC_QUICK_START_TEMPLATES: DashboardQuickStartTemplate[] = [
     serviceCount: 5,
     services: ['Amazon S3', 'CloudFront', 'ACM', 'Route 53'],
     complexity: 'Starter',
+    isStaticTemplate: true,
+  },
+  {
+    id: 'tpl-ai-social-platform',
+    title: 'AI Social Platform — Multi-Tier Architecture',
+    category: 'AI & Social Media',
+    description: 'Scalable cloud architecture for an AI-powered social media platform with user auth, real-time chat, AI agents, video reels, media processing, and persistent data storage.',
+    serviceCount: 40,
+    services: [
+      'Route 53', 'WAF', 'CloudFront', 'S3', 'API Gateway', 'ALB', 'ECS Fargate',
+      'RDS PostgreSQL', 'DynamoDB', 'Bedrock', 'SQS', 'Lambda', 'MediaConvert',
+      'ElastiCache', 'Secrets Manager', 'CloudWatch', 'IAM', 'VPC', 'NAT Gateway',
+    ],
+    complexity: 'Production',
     isStaticTemplate: true,
   },
 ];

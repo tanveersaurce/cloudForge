@@ -25,7 +25,12 @@ export interface DashboardServicePreview {
 export interface DashboardQuickStartTemplate {
   id: string;
   title: string;
-  category: 'Web & Compute' | 'Serverless' | 'Networking' | 'Storage & Edge';
+  category:
+    | 'Web & Compute'
+    | 'Serverless'
+    | 'Networking'
+    | 'Storage & Edge'
+    | 'AI & Social Media';
   description: string;
   serviceCount: number;
   services: string[];

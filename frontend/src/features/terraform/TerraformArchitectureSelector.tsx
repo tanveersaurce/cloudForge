@@ -5,10 +5,6 @@ import { apiFetch } from '@/services/apiClient';
 import type { ApiSuccessResponse } from '@/types/api';
 import type { ArchitectureSummaryDto } from '@/features/architecture-builder/types/architecture.types';
 
-interface ArchitectureListItemResponse {
-  architectures: ArchitectureSummaryDto[];
-}
-
 export function TerraformArchitectureSelector(): React.ReactElement {
   const navigate = useNavigate();
   const [architectures, setArchitectures] = useState<ArchitectureSummaryDto[]>([]);
@@ -19,10 +15,10 @@ export function TerraformArchitectureSelector(): React.ReactElement {
     setIsLoading(true);
     setError(null);
     try {
-      const data = await apiFetch<ApiSuccessResponse<ArchitectureListItemResponse>>(
+      const data = await apiFetch<ApiSuccessResponse<ArchitectureSummaryDto[]>>(
         '/architectures',
       );
-      setArchitectures(data.data.architectures);
+      setArchitectures(data.data ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load architectures');
     } finally {

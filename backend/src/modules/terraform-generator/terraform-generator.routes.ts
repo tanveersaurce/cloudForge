@@ -6,4 +6,4 @@ export const terraformRouter = Router();
 
 terraformRouter.use(requireAuth);
 
-terraformRouter.post('/architectures/:id/terraform', handleGenerateTerraform);
+terraformRouter.post('/:id/terraform', handleGenerateTerraform);
