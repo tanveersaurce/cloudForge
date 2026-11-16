@@ -2508,5 +2508,37 @@ describe('AWS Cost Estimation Engine & Intelligent Optimization (Phase 08)', () 
       expect(result.summary.conflicting).toHaveLength(0);
       expect(result.summary.failed).toHaveLength(0);
     });
+
+    it('returns unambiguous result when cost recalculation fails after DB update', async () => {
+      const recs = [makeRecommendation()];
+      mockCalculateCost(recs);
+
+      // First call (current cost) succeeds, second call (recalculation) fails
+      const calcSpy = vi.spyOn(PricingService, 'calculateCost');
+      calcSpy.mockResolvedValueOnce({
+        architectureId: 'arch-1',
+        region: 'us-east-1',
+        currency: 'USD',
+        totalEstimatedMonthly: 100.0,
+        totalEstimatedHourly: 0.14,
+        totalEstimatedAnnual: 1200.0,
+        assumptions: getDefaultAssumptions(),
+        serviceBreakdown: [],
+        resourceItems: [],
+        missingAssumptions: [],
+        potentialMonthlySavings: 20.0,
+        recommendations: recs,
+        calculatedAt: new Date().toISOString(),
+      } as any);
+      calcSpy.mockRejectedValueOnce(new Error('Pricing engine unavailable'));
+
+      const result = await PricingService.applyAllOptimizations('arch-1', 'user-1');
+
+      // DB update succeeded (applied), but recalculation failed
+      expect(result.summary.applied).toHaveLength(1);
+      expect(result.summary.recalculationFailed).toBe(true);
+      // Result falls back to pre-update cost
+      expect(result.result.totalEstimatedMonthly).toBe(100.0);
+    });
   });
 });

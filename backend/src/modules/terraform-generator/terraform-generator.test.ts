@@ -250,4 +250,127 @@ describe('Terraform Generator', () => {
       expect(variablesContent).toContain('default = "eu-west-1"');
     });
   });
+
+  describe('HCL expression handling', () => {
+    it('EC2 AMI variable is not quoted (Terraform expression)', () => {
+      const nodes: TestNode[] = [
+        { id: 'i1', resourceType: 'aws_instance', label: 'Server', metadata: { instance_type: 't3.micro', root_volume_size: 20 } },
+      ];
+      const edges: TestEdge[] = [];
+
+      const { files } = TerraformGenerator.generate('Test Arch', 'us-east-1', nodes, edges);
+      const allContent = files.map((f) => f.content).join('\n');
+
+      // AMI should be a bare reference, not quoted
+      expect(allContent).toContain('ami = var.ec2_ami');
+      expect(allContent).not.toContain('ami = "var.ec2_ami"');
+    });
+
+    it('ordinary strings remain quoted', () => {
+      const nodes: TestNode[] = [
+        { id: 'v1', resourceType: 'aws_vpc', label: 'My VPC', metadata: { cidr_block: '10.0.0.0/16' } },
+      ];
+      const edges: TestEdge[] = [];
+
+      const { files } = TerraformGenerator.generate('Test Arch', 'us-east-1', nodes, edges);
+      const allContent = files.map((f) => f.content).join('\n');
+
+      // Tags Name should be quoted string
+      expect(allContent).toContain('tags = {');
+      expect(allContent).toContain('Name = "My VPC"');
+    });
+
+    it('VPC reference ends in .id', () => {
+      const nodes: TestNode[] = [
+        { id: 'v1', resourceType: 'aws_vpc', label: 'Main VPC', metadata: { cidr_block: '10.0.0.0/16' } },
+        { id: 's1', resourceType: 'aws_subnet', label: 'Subnet', metadata: { cidr_block: '10.0.1.0/24', availability_zone: 'us-east-1a' } },
+      ];
+      const edges: TestEdge[] = [
+        { id: 'e1', source: 'v1', target: 's1', relationshipType: 'contains', direction: 'source-to-target' },
+      ];
+
+      const { files } = TerraformGenerator.generate('Test Arch', 'us-east-1', nodes, edges);
+      const allContent = files.map((f) => f.content).join('\n');
+
+      expect(allContent).toMatch(/aws_vpc\.[a-z0-9_]+\.id/);
+    });
+
+    it('NAT subnet reference ends in .id', () => {
+      const nodes: TestNode[] = [
+        { id: 'v1', resourceType: 'aws_vpc', label: 'VPC', metadata: { cidr_block: '10.0.0.0/16' } },
+        { id: 's1', resourceType: 'aws_subnet', label: 'Public Subnet', metadata: { cidr_block: '10.0.1.0/24', availability_zone: 'us-east-1a' } },
+        { id: 'ngw1', resourceType: 'aws_nat_gateway', label: 'NAT GW', metadata: {} },
+      ];
+      const edges: TestEdge[] = [
+        { id: 'e1', source: 'v1', target: 's1', relationshipType: 'contains', direction: 'source-to-target' },
+        { id: 'e2', source: 's1', target: 'ngw1', relationshipType: 'contains', direction: 'source-to-target' },
+      ];
+
+      const { files } = TerraformGenerator.generate('Test Arch', 'us-east-1', nodes, edges);
+      const allContent = files.map((f) => f.content).join('\n');
+
+      expect(allContent).toMatch(/aws_subnet\.[a-z0-9_]+\.id/);
+    });
+
+    it('reverse-direction edges are rejected (SG contains VPC instead of VPC contains SG)', () => {
+      const nodes: TestNode[] = [
+        { id: 'v1', resourceType: 'aws_vpc', label: 'VPC', metadata: { cidr_block: '10.0.0.0/16' } },
+        { id: 'sg1', resourceType: 'aws_security_group', label: 'SG', metadata: {} },
+      ];
+      // Reverse: SG contains VPC (invalid)
+      const edges: TestEdge[] = [
+        { id: 'e1', source: 'sg1', target: 'v1', relationshipType: 'contains', direction: 'source-to-target' },
+      ];
+
+      const { issues } = TerraformGenerator.generate('Test Arch', 'us-east-1', nodes, edges);
+      const errors = issues.filter((i) => i.severity === 'error');
+      expect(errors.length).toBeGreaterThan(0);
+    });
+
+    it('ambiguous relationships are reported', () => {
+      const nodes: TestNode[] = [
+        { id: 'v1', resourceType: 'aws_vpc', label: 'VPC 1', metadata: { cidr_block: '10.0.0.0/16' } },
+        { id: 'v2', resourceType: 'aws_vpc', label: 'VPC 2', metadata: { cidr_block: '10.0.0.0/16' } },
+        { id: 's1', resourceType: 'aws_subnet', label: 'Subnet', metadata: { cidr_block: '10.0.1.0/24', availability_zone: 'us-east-1a' } },
+      ];
+      // Subnet contained by both VPCs
+      const edges: TestEdge[] = [
+        { id: 'e1', source: 'v1', target: 's1', relationshipType: 'contains', direction: 'source-to-target' },
+        { id: 'e2', source: 'v2', target: 's1', relationshipType: 'contains', direction: 'source-to-target' },
+      ];
+
+      const { issues } = TerraformGenerator.generate('Test Arch', 'us-east-1', nodes, edges);
+      const errors = issues.filter((i) => i.severity === 'error');
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors.some((e) => e.missing.toLowerCase().includes('ambiguous'))).toBe(true);
+    });
+
+    it('unsupported resource types produce issues', () => {
+      const nodes: TestNode[] = [
+        { id: 'r1', resourceType: 'aws_redshift_cluster', label: 'Redshift', metadata: {} },
+      ];
+      const edges: TestEdge[] = [];
+
+      const { issues } = TerraformGenerator.generate('Test Arch', 'us-east-1', nodes, edges);
+      const errors = issues.filter((i) => i.severity === 'error');
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors[0].missing).toContain('Unsupported resource type');
+    });
+
+    it('circular dependencies are detected without infinite loop', () => {
+      const nodes: TestNode[] = [
+        { id: 'v1', resourceType: 'aws_vpc', label: 'VPC', metadata: { cidr_block: '10.0.0.0/16' } },
+        { id: 's1', resourceType: 'aws_subnet', label: 'Subnet', metadata: { cidr_block: '10.0.1.0/24' } },
+      ];
+      const edges: TestEdge[] = [
+        { id: 'e1', source: 'v1', target: 's1', relationshipType: 'contains', direction: 'source-to-target' },
+        { id: 'e2', source: 's1', target: 'v1', relationshipType: 'contains', direction: 'source-to-target' },
+      ];
+
+      const { files, issues } = TerraformGenerator.generate('Test Arch', 'us-east-1', nodes, edges);
+      expect(files.length).toBeGreaterThan(0);
+      const errors = issues.filter((i) => i.severity === 'error');
+      expect(errors.some((e) => e.missing.toLowerCase().includes('circular'))).toBe(true);
+    });
+  });
 });

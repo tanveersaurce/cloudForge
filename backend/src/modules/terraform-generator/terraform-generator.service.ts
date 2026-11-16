@@ -41,6 +41,23 @@ interface DependencyIssue {
   severity: 'error' | 'warning';
 }
 
+/**
+ * A Terraform expression (reference) that should NOT be quoted as a string.
+ * Example: aws_vpc.main.id, var.ec2_ami, aws_security_group.web.id
+ */
+interface TfExpression {
+  __tfExpr: true;
+  value: string;
+}
+
+function tfExpr(value: string): TfExpression {
+  return { __tfExpr: true, value };
+}
+
+function isTfExpression(v: unknown): v is TfExpression {
+  return typeof v === 'object' && v !== null && '__tfExpr' in v;
+}
+
 function hclString(value: string): string {
   return JSON.stringify(value);
 }
@@ -54,6 +71,7 @@ function hclBlock(
   const attrLines = Object.entries(attributes)
     .filter(([, v]) => v !== undefined && v !== null)
     .map(([k, v]) => {
+      if (isTfExpression(v)) return `  ${k} = ${v.value}`;
       if (typeof v === 'string') return `  ${k} = ${hclString(v)}`;
       if (typeof v === 'boolean') return `  ${k} = ${v}`;
       if (typeof v === 'number') return `  ${k} = ${v}`;
@@ -62,6 +80,7 @@ function hclBlock(
         const objLines = Object.entries(obj)
           .filter(([, ov]) => ov !== undefined && ov !== null)
           .map(([ok, ov]) => {
+            if (isTfExpression(ov)) return `    ${ok} = ${ov.value}`;
             if (typeof ov === 'string') return `    ${ok} = ${hclString(ov)}`;
             if (typeof ov === 'boolean') return `    ${ok} = ${ov}`;
             return `    ${ok} = ${ov}`;
@@ -172,6 +191,99 @@ function resolveSubnetId(
 }
 
 /**
+ * Detect circular "contains" relationships using DFS.
+ * Returns true if any cycle exists among nodes connected by 'contains' edges.
+ */
+function hasCircularContains(
+  nodes: Map<string, TerraformNodeInput>,
+  edges: TerraformEdgeInput[],
+): boolean {
+  const WHITE = 0, GRAY = 1, BLACK = 2;
+  const color = new Map<string, number>();
+  for (const id of nodes.keys()) color.set(id, WHITE);
+
+  const adj = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (edge.relationshipType !== 'contains') continue;
+    const list = adj.get(edge.source) ?? [];
+    list.push(edge.target);
+    adj.set(edge.source, list);
+  }
+
+  function dfs(u: string): boolean {
+    color.set(u, GRAY);
+    const neighbors = adj.get(u) ?? [];
+    for (const v of neighbors) {
+      const c = color.get(v);
+      if (c === GRAY) return true; // back edge → cycle
+      if (c === WHITE && dfs(v)) return true;
+    }
+    color.set(u, BLACK);
+    return false;
+  }
+
+  for (const id of nodes.keys()) {
+    if (color.get(id) === WHITE && dfs(id)) return true;
+  }
+  return false;
+}
+
+/**
+ * Detect ambiguous parent relationships: a node with more than one incoming
+ * 'contains' edge from valid parent types.
+ * Only flags ambiguity where a resource should have exactly one parent of that type.
+ * ALBs can legitimately be in multiple subnets, so they're excluded.
+ */
+function collectAmbiguousRelationshipIssues(
+  nodes: Map<string, TerraformNodeInput>,
+  edges: TerraformEdgeInput[],
+): DependencyIssue[] {
+  const issues: DependencyIssue[] = [];
+  const incomingContains = new Map<string, string[]>(); // targetId -> [sourceIds]
+
+  for (const edge of edges) {
+    if (edge.relationshipType !== 'contains') continue;
+    const list = incomingContains.get(edge.target) ?? [];
+    list.push(edge.source);
+    incomingContains.set(edge.target, list);
+  }
+
+  // Resources that must have exactly one parent of the given type
+  const singleParentRules: Record<string, string[]> = {
+    aws_subnet: ['aws_vpc'],
+    aws_instance: ['aws_subnet'],
+    aws_db_instance: ['aws_subnet'],
+    aws_nat_gateway: ['aws_subnet'],
+    aws_security_group: ['aws_vpc'],
+    aws_internet_gateway: ['aws_vpc'],
+  };
+
+  for (const [targetId, sourceIds] of incomingContains) {
+    const target = nodes.get(targetId);
+    if (!target) continue;
+
+    const rule = singleParentRules[target.resourceType];
+    if (!rule) continue; // e.g. aws_lb can have multiple subnet parents — normal
+
+    const validParents = sourceIds.filter((sid) => {
+      const n = nodes.get(sid);
+      return n ? rule.includes(n.resourceType) : false;
+    });
+
+    if (validParents.length > 1) {
+      issues.push({
+        nodeId: targetId,
+        resourceType: target.resourceType,
+        missing: `Ambiguous parent: ${targetId} is contained by multiple ${rule.join(' or ')} resources (${validParents.join(', ')})`,
+        severity: 'error',
+      });
+    }
+  }
+
+  return issues;
+}
+
+/**
  * Collect dependency issues for missing/unresolved relationships.
  */
 function collectDependencyIssues(
@@ -179,6 +291,19 @@ function collectDependencyIssues(
   edges: TerraformEdgeInput[],
 ): DependencyIssue[] {
   const issues: DependencyIssue[] = [];
+
+  // Circular dependency check
+  if (hasCircularContains(nodes, edges)) {
+    issues.push({
+      nodeId: 'architecture',
+      resourceType: 'architecture',
+      missing: 'Circular "contains" relationship detected in architecture graph',
+      severity: 'error',
+    });
+  }
+
+  // Ambiguous parent check
+  issues.push(...collectAmbiguousRelationshipIssues(nodes, edges));
 
   for (const [nodeId, node] of nodes) {
     if (node.resourceType === 'aws_subnet') {
@@ -612,7 +737,7 @@ export class TerraformGenerator {
       const rootSize = Number(inst.metadata?.root_volume_size || 20);
 
       // AMI: do NOT hardcode. Use variable placeholder with clear warning.
-      const ami = (inst.metadata?.ami as string) || 'var.ec2_ami';
+      const ami = (inst.metadata?.ami as string) || tfExpr('var.ec2_ami');
       if (!inst.metadata?.ami) {
         issues.push({
           nodeId: inst.id,
@@ -820,9 +945,9 @@ export class TerraformGenerator {
       const memorySize = Number(lambda.metadata?.memory_size || 128);
       const timeout = Number(lambda.metadata?.timeout || 30);
 
-      // Find IAM role for lambda via edges.
-      // Only follow 'accesses' edges where the Lambda is the source (it accesses the role).
-      let lambdaRoleRef = 'var.lambda_role_arn';
+      // Find IAM role for Lambda via edges.
+      // Only follow 'accesses' edges where Lambda is the source (it accesses the role).
+      let lambdaRoleRef: string | TfExpression = tfExpr('var.lambda_role_arn');
       for (const edge of edges) {
         if (
           edge.source === lambda.id &&
@@ -832,13 +957,13 @@ export class TerraformGenerator {
         ) {
           const roleNode = nodeMap.get(edge.target);
           if (roleNode?.resourceType === 'aws_iam_role' && iamRefs.has(edge.target)) {
-            lambdaRoleRef = `aws_iam_role.${iamRefs.get(edge.target)}.arn`;
+            lambdaRoleRef = tfExpr(`aws_iam_role.${iamRefs.get(edge.target)}.arn`);
             break;
           }
         }
       }
 
-      if (lambdaRoleRef === 'var.lambda_role_arn' && iamRolesPre.length > 0) {
+      if (typeof lambdaRoleRef === 'string' && iamRolesPre.length > 0) {
         issues.push({
           nodeId: lambda.id,
           resourceType: 'aws_lambda_function',
@@ -861,7 +986,7 @@ export class TerraformGenerator {
             tags: { Name: lambda.label || name },
           },
           [
-            `  role = ${lambdaRoleRef}`,
+            `  role = ${typeof lambdaRoleRef === 'string' ? lambdaRoleRef : lambdaRoleRef.value}`,
             `  filename = "lambda.zip"  // TODO: point to your deployment package`,
             `  source_code_hash = filebase64sha256("lambda.zip")`,
           ],
@@ -1021,6 +1146,33 @@ export class TerraformGenerator {
           },
         ),
       });
+    }
+
+    // Report unsupported resource types explicitly
+    const supportedTypes = new Set([
+      'aws_vpc',
+      'aws_subnet',
+      'aws_internet_gateway',
+      'aws_nat_gateway',
+      'aws_security_group',
+      'aws_instance',
+      'aws_db_instance',
+      'aws_s3_bucket',
+      'aws_dynamodb_table',
+      'aws_lambda_function',
+      'aws_lb',
+      'aws_iam_role',
+      'aws_kms_key',
+    ]);
+    for (const node of nodes) {
+      if (!supportedTypes.has(node.resourceType)) {
+        issues.push({
+          nodeId: node.id,
+          resourceType: node.resourceType,
+          missing: `Unsupported resource type "${node.resourceType}" — no Terraform generator implemented`,
+          severity: 'error',
+        });
+      }
     }
 
     // Variables file

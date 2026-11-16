@@ -357,6 +357,7 @@ export class PricingService {
         conflictingWith: string[];
       }>;
       failed: string[];
+      recalculationFailed: boolean;
     };
   }> {
     const arch = await prisma.architecture.findUnique({
@@ -374,7 +375,7 @@ export class PricingService {
     if (recommendations.length === 0) {
       return {
         result: current,
-        summary: { applied: [], skipped: [], conflicting: [], failed: [] },
+        summary: { applied: [], skipped: [], conflicting: [], failed: [], recalculationFailed: false },
       };
     }
 
@@ -479,6 +480,7 @@ export class PricingService {
           skipped: skippedIds,
           conflicting: conflictingList,
           failed: [],
+          recalculationFailed: false,
         },
       };
     }
@@ -544,6 +546,7 @@ export class PricingService {
           skipped: [],
           conflicting: conflictingList,
           failed: failedIds,
+          recalculationFailed: false,
         },
       };
     }
@@ -555,8 +558,24 @@ export class PricingService {
       }
     }
 
+    // Track recommendations whose target resources don't exist in the architecture
+    const existingNodeIds = new Set(nodes.map((n) => n.id));
+    for (const rec of nonConflictingRecs) {
+      const hasAnyTarget = rec.affectedResourceIds.some((rid) => existingNodeIds.has(rid));
+      if (!hasAnyTarget && !appliedIds.includes(rec.recommendationId)) {
+        failedIds.push(rec.recommendationId);
+      }
+    }
+
     // Recalculate cost with all optimizations applied
-    const result = await this.calculateCost(architectureId, userId);
+    let result: CostEstimationResult;
+    let recalculationFailed = false;
+    try {
+      result = await this.calculateCost(architectureId, userId);
+    } catch (err) {
+      recalculationFailed = true;
+      result = current;
+    }
 
     return {
       result,
@@ -565,6 +584,7 @@ export class PricingService {
         skipped: skippedIds,
         conflicting: conflictingList,
         failed: failedIds,
+        recalculationFailed,
       },
     };
   }
