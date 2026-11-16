@@ -129,8 +129,22 @@ function uniqueResourceName(
 }
 
 /**
+ * Validate that an edge direction value is one of the allowed Terraform-style directions.
+ */
+function isValidDirection(direction?: string): boolean {
+  return (
+    direction === 'source-to-target' ||
+    direction === 'target-to-source' ||
+    direction === 'bidirectional' ||
+    direction === undefined
+  );
+}
+
+/**
  * Resolve which VPC a resource belongs to by walking edges.
  * Follows 'contains' relationships from VPC -> Subnet -> Resource.
+ * Validates edge direction: for 'contains', source-to-target means source contains target.
+ * Prevents infinite recursion on cyclic graphs.
  */
 function resolveVpcId(
   nodes: Map<string, TerraformNodeInput>,
@@ -143,26 +157,51 @@ function resolveVpcId(
   // Direct VPC node
   if (node.resourceType === 'aws_vpc') return nodeId;
 
-  // Find VPC via 'contains' edge: VPC contains this node
-  for (const edge of edges) {
-    if (edge.target === nodeId && edge.relationshipType === 'contains') {
-      const source = nodes.get(edge.source);
-      if (source?.resourceType === 'aws_vpc') return edge.source;
-      // Recursively: source might be a subnet that contains this node
-      const vpc = resolveVpcId(nodes, edges, edge.source);
-      if (vpc) return vpc;
+  const visited = new Set<string>();
+
+  function dfs(currentId: string): string | null {
+    if (visited.has(currentId)) return null; // cycle guard
+    visited.add(currentId);
+
+    for (const edge of edges) {
+      if (edge.relationshipType !== 'contains') continue;
+      if (!isValidDirection(edge.direction)) continue;
+
+      // source-to-target (or bidirectional): source contains target
+      if (
+        edge.direction === 'source-to-target' ||
+        edge.direction === 'bidirectional' ||
+        edge.direction === undefined
+      ) {
+        if (edge.target === currentId) {
+          const source = nodes.get(edge.source);
+          if (source?.resourceType === 'aws_vpc') return edge.source;
+          const vpc = dfs(edge.source);
+          if (vpc) return vpc;
+        }
+      }
+      // target-to-source (or bidirectional): target contains source
+      if (
+        edge.direction === 'target-to-source' ||
+        edge.direction === 'bidirectional'
+      ) {
+        if (edge.source === currentId) {
+          const target = nodes.get(edge.target);
+          if (target?.resourceType === 'aws_vpc') return edge.target;
+          const vpc = dfs(edge.target);
+          if (vpc) return vpc;
+        }
+      }
     }
+    return null;
   }
 
-  // Fallback: check metadata
-  const vpcId = node.metadata?.vpc_id as string | undefined;
-  if (vpcId && nodes.has(vpcId)) return vpcId;
-
-  return null;
+  return dfs(nodeId);
 }
 
 /**
  * Resolve which Subnet a resource is placed in via edges.
+ * Validates edge direction the same way as resolveVpcId.
  */
 function resolveSubnetId(
   nodes: Map<string, TerraformNodeInput>,
@@ -175,19 +214,44 @@ function resolveSubnetId(
   // Direct subnet node
   if (node.resourceType === 'aws_subnet') return nodeId;
 
-  // Find subnet via 'contains' edge: Subnet contains this node
-  for (const edge of edges) {
-    if (edge.target === nodeId && edge.relationshipType === 'contains') {
-      const source = nodes.get(edge.source);
-      if (source?.resourceType === 'aws_subnet') return edge.source;
+  const visited = new Set<string>();
+
+  function dfs(currentId: string): string | null {
+    if (visited.has(currentId)) return null; // cycle guard
+    visited.add(currentId);
+
+    for (const edge of edges) {
+      if (edge.relationshipType !== 'contains') continue;
+      if (!isValidDirection(edge.direction)) continue;
+
+      if (
+        edge.direction === 'source-to-target' ||
+        edge.direction === 'bidirectional' ||
+        edge.direction === undefined
+      ) {
+        if (edge.target === currentId) {
+          const source = nodes.get(edge.source);
+          if (source?.resourceType === 'aws_subnet') return edge.source;
+          const subnet = dfs(edge.source);
+          if (subnet) return subnet;
+        }
+      }
+      if (
+        edge.direction === 'target-to-source' ||
+        edge.direction === 'bidirectional'
+      ) {
+        if (edge.source === currentId) {
+          const target = nodes.get(edge.target);
+          if (target?.resourceType === 'aws_subnet') return edge.target;
+          const subnet = dfs(edge.target);
+          if (subnet) return subnet;
+        }
+      }
     }
+    return null;
   }
 
-  // Fallback: check metadata
-  const subnetId = node.metadata?.subnet_id as string | undefined;
-  if (subnetId && nodes.has(subnetId)) return subnetId;
-
-  return null;
+  return dfs(nodeId);
 }
 
 /**
@@ -512,7 +576,7 @@ export class TerraformGenerator {
 
       const blocks: string[] = [];
       if (vpcNodeId && vpcRefs.has(vpcNodeId)) {
-        blocks.push(`  vpc_id = aws_vpc.${vpcRefs.get(vpcNodeId)}`);
+        blocks.push(`  vpc_id = aws_vpc.${vpcRefs.get(vpcNodeId)}.id`);
       } else if (vpcs.length > 0) {
         blocks.push(`  vpc_id = var.vpc_id  // TODO: associate with correct VPC`);
       }
@@ -552,7 +616,7 @@ export class TerraformGenerator {
 
       const blocks: string[] = [];
       if (vpcNodeId && vpcRefs.has(vpcNodeId)) {
-        blocks.push(`  vpc_id = aws_vpc.${vpcRefs.get(vpcNodeId)}`);
+        blocks.push(`  vpc_id = aws_vpc.${vpcRefs.get(vpcNodeId)}.id`);
       } else if (vpcs.length > 0) {
         blocks.push(`  vpc_id = var.vpc_id  // TODO: attach to correct VPC`);
       }
@@ -600,7 +664,7 @@ export class TerraformGenerator {
 
       const blocks: string[] = [];
       if (subnetNodeId && subnetRefs.has(subnetNodeId)) {
-        blocks.push(`  subnet_id = aws_subnet.${subnetRefs.get(subnetNodeId)}`);
+        blocks.push(`  subnet_id = aws_subnet.${subnetRefs.get(subnetNodeId)}.id`);
       } else if (subnets.length > 0) {
         blocks.push(`  subnet_id = var.subnet_ids[0]  // TODO: specify public subnet`);
       }
@@ -635,7 +699,7 @@ export class TerraformGenerator {
 
       const blocks: string[] = [];
       if (vpcNodeId && vpcRefs.has(vpcNodeId)) {
-        blocks.push(`  vpc_id = aws_vpc.${vpcRefs.get(vpcNodeId)}`);
+        blocks.push(`  vpc_id = aws_vpc.${vpcRefs.get(vpcNodeId)}.id`);
       } else if (vpcs.length > 0) {
         blocks.push(`  vpc_id = var.vpc_id  // TODO: associate with correct VPC`);
       }
@@ -749,7 +813,7 @@ export class TerraformGenerator {
 
       const blocks: string[] = [];
       if (subnetNodeId && subnetRefs.has(subnetNodeId)) {
-        blocks.push(`  subnet_id = aws_subnet.${subnetRefs.get(subnetNodeId)}`);
+        blocks.push(`  subnet_id = aws_subnet.${subnetRefs.get(subnetNodeId)}.id`);
       } else if (subnets.length > 0) {
         blocks.push(`  subnet_id = var.subnet_ids[0]  // TODO: specify subnet`);
       }
@@ -815,7 +879,7 @@ export class TerraformGenerator {
 
       const subnetNodeId = resolveSubnetId(nodeMap, edges, rds.id);
       if (subnetNodeId && subnetRefs.has(subnetNodeId)) {
-        blocks.push(`  subnet_id = aws_subnet.${subnetRefs.get(subnetNodeId)}`);
+        blocks.push(`  subnet_id = aws_subnet.${subnetRefs.get(subnetNodeId)}.id`);
       } else if (subnets.length > 0) {
         blocks.push(`  subnet_id = var.subnet_ids[0]  // TODO: specify subnet`);
       }

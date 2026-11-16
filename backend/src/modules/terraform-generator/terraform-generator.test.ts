@@ -40,10 +40,12 @@ describe('Terraform Generator', () => {
 
       // VPC resource exists
       expect(hclContains(allContent, 'resource "aws_vpc"')).toBe(true);
-      // Subnet references VPC
-      expect(hclContains(allContent, 'vpc_id = aws_vpc.')).toBe(true);
-      // EC2 references Subnet
-      expect(hclContains(allContent, 'subnet_id = aws_subnet.')).toBe(true);
+      // Find the subnet file and check it references VPC with .id
+      const subnetFile = files.find((f) => f.filename.startsWith('subnet/'))?.content ?? '';
+      expect(subnetFile).toContain('vpc_id = aws_vpc.main_vpc.id');
+      // Find the EC2 file and check it references Subnet with .id
+      const ec2File = files.find((f) => f.filename.startsWith('ec2/'))?.content ?? '';
+      expect(ec2File).toContain('subnet_id = aws_subnet.app_subnet.id');
       // No errors for this valid chain
       const errors = issues.filter((i) => i.severity === 'error');
       expect(errors).toHaveLength(0);
@@ -103,12 +105,59 @@ describe('Terraform Generator', () => {
 
       // ALB resource exists
       expect(hclContains(allContent, 'resource "aws_lb"')).toBe(true);
-      // Multiple subnets referenced
-      const subnetRefs = (allContent.match(/aws_subnet\.[a-z0-9_]+\.id/g) || []);
+      // Find the ALB file and check it references subnets with .id
+      const albFile = files.find((f) => f.filename.startsWith('alb/'))?.content ?? '';
+      const subnetRefs = (albFile.match(/aws_subnet\.[a-z0-9_]+\.id/g) || []);
       expect(subnetRefs.length).toBeGreaterThanOrEqual(2);
-      // Security group referenced
-      expect(hclContains(allContent, 'security_groups = [aws_security_group.')).toBe(true);
+      // ALB file references security group with .id
+      expect(albFile).toContain('aws_security_group.alb_sg.id');
       // No errors
+      const errors = issues.filter((i) => i.severity === 'error');
+      expect(errors).toHaveLength(0);
+    });
+  });
+
+  describe('NAT Gateway subnet reference', () => {
+    it('generates NAT Gateway with subnet .id reference', () => {
+      const nodes: TestNode[] = [
+        { id: 'v1', resourceType: 'aws_vpc', label: 'VPC', metadata: { cidr_block: '10.0.0.0/16' } },
+        { id: 's1', resourceType: 'aws_subnet', label: 'Public Subnet', metadata: { cidr_block: '10.0.1.0/24', availability_zone: 'us-east-1a' } },
+        { id: 'ngw1', resourceType: 'aws_nat_gateway', label: 'NAT GW', metadata: {} },
+      ];
+      const edges: TestEdge[] = [
+        { id: 'e1', source: 'v1', target: 's1', relationshipType: 'contains', direction: 'source-to-target' },
+        { id: 'e2', source: 's1', target: 'ngw1', relationshipType: 'contains', direction: 'source-to-target' },
+      ];
+
+      const { files, issues } = TerraformGenerator.generate('Test Arch', 'us-east-1', nodes, edges);
+      const allContent = files.map((f) => f.content).join('\n');
+
+      const natFile = files.find((f) => f.filename.startsWith('nat-gateway/') && !f.filename.endsWith('-eip.tf'))?.content ?? '';
+      expect(natFile).toMatch(/subnet_id = aws_subnet\.[a-z0-9_]+\.id/);
+      // NAT Gateway block also references EIP allocation_id with .id
+      expect(natFile).toMatch(/allocation_id = aws_eip\.[a-z0-9_]+\.id/);
+      const errors = issues.filter((i) => i.severity === 'error');
+      expect(errors).toHaveLength(0);
+    });
+  });
+
+  describe('RDS subnet reference', () => {
+    it('generates RDS with subnet .id reference', () => {
+      const nodes: TestNode[] = [
+        { id: 'v1', resourceType: 'aws_vpc', label: 'VPC', metadata: { cidr_block: '10.0.0.0/16' } },
+        { id: 's1', resourceType: 'aws_subnet', label: 'DB Subnet', metadata: { cidr_block: '10.0.1.0/24', availability_zone: 'us-east-1a' } },
+        { id: 'db1', resourceType: 'aws_db_instance', label: 'DB', metadata: { engine: 'postgres', instance_class: 'db.t3.micro', allocated_storage: 20 } },
+      ];
+      const edges: TestEdge[] = [
+        { id: 'e1', source: 'v1', target: 's1', relationshipType: 'contains', direction: 'source-to-target' },
+        { id: 'e2', source: 's1', target: 'db1', relationshipType: 'contains', direction: 'source-to-target' },
+      ];
+
+      const { files, issues } = TerraformGenerator.generate('Test Arch', 'us-east-1', nodes, edges);
+      const allContent = files.map((f) => f.content).join('\n');
+
+      const rdsFile = files.find((f) => f.filename.startsWith('rds/'))?.content ?? '';
+      expect(rdsFile).toMatch(/subnet_id = aws_subnet\.[a-z0-9_]+\.id/);
       const errors = issues.filter((i) => i.severity === 'error');
       expect(errors).toHaveLength(0);
     });
@@ -198,6 +247,52 @@ describe('Terraform Generator', () => {
       const errors = issues.filter((i) => i.severity === 'error');
       expect(errors.length).toBeGreaterThan(0);
       expect(errors[0].missing).toContain('VPC');
+    });
+
+    it('rejects reverse-direction edges (SG contains VPC instead of VPC contains SG)', () => {
+      const nodes: TestNode[] = [
+        { id: 'v1', resourceType: 'aws_vpc', label: 'VPC', metadata: { cidr_block: '10.0.0.0/16' } },
+        { id: 'sg1', resourceType: 'aws_security_group', label: 'SG', metadata: {} },
+      ];
+      // Reverse: SG contains VPC (invalid — SG cannot contain VPC)
+      const edges: TestEdge[] = [
+        { id: 'e1', source: 'sg1', target: 'v1', relationshipType: 'contains', direction: 'source-to-target' },
+      ];
+
+      const { issues } = TerraformGenerator.generate('Test Arch', 'us-east-1', nodes, edges);
+      const errors = issues.filter((i) => i.severity === 'error');
+      expect(errors.length).toBeGreaterThan(0);
+    });
+
+    it('rejects invalid relationship directions', () => {
+      const nodes: TestNode[] = [
+        { id: 'v1', resourceType: 'aws_vpc', label: 'VPC', metadata: { cidr_block: '10.0.0.0/16' } },
+        { id: 's1', resourceType: 'aws_subnet', label: 'Subnet', metadata: { cidr_block: '10.0.1.0/24', availability_zone: 'us-east-1a' } },
+      ];
+      // Invalid direction value
+      const edges: TestEdge[] = [
+        { id: 'e1', source: 'v1', target: 's1', relationshipType: 'contains', direction: 'invalid-direction' as any },
+      ];
+
+      const { issues } = TerraformGenerator.generate('Test Arch', 'us-east-1', nodes, edges);
+      const errors = issues.filter((i) => i.severity === 'error');
+      expect(errors.length).toBeGreaterThan(0);
+    });
+
+    it('accepts valid bidirectional edges', () => {
+      const nodes: TestNode[] = [
+        { id: 'v1', resourceType: 'aws_vpc', label: 'VPC', metadata: { cidr_block: '10.0.0.0/16' } },
+        { id: 's1', resourceType: 'aws_subnet', label: 'Subnet', metadata: { cidr_block: '10.0.1.0/24', availability_zone: 'us-east-1a' } },
+      ];
+      const edges: TestEdge[] = [
+        { id: 'e1', source: 'v1', target: 's1', relationshipType: 'contains', direction: 'bidirectional' },
+      ];
+
+      const { files, issues } = TerraformGenerator.generate('Test Arch', 'us-east-1', nodes, edges);
+      const allContent = files.map((f) => f.content).join('\n');
+      expect(allContent).toMatch(/aws_vpc\.[a-z0-9_]+\.id/);
+      const errors = issues.filter((i) => i.severity === 'error');
+      expect(errors).toHaveLength(0);
     });
   });
 

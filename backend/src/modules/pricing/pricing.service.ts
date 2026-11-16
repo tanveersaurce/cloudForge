@@ -357,6 +357,7 @@ export class PricingService {
         conflictingWith: string[];
       }>;
       failed: string[];
+      partialTargets: string[];
       recalculationFailed: boolean;
     };
   }> {
@@ -375,7 +376,7 @@ export class PricingService {
     if (recommendations.length === 0) {
       return {
         result: current,
-        summary: { applied: [], skipped: [], conflicting: [], failed: [], recalculationFailed: false },
+        summary: { applied: [], skipped: [], conflicting: [], failed: [], partialTargets: [], recalculationFailed: false },
       };
     }
 
@@ -471,6 +472,7 @@ export class PricingService {
     const appliedIds: string[] = [];
     const skippedIds: string[] = [];
     const failedIds: string[] = [];
+    const partialTargets: string[] = [];
 
     if (nonConflictingRecs.length === 0) {
       return {
@@ -480,6 +482,7 @@ export class PricingService {
           skipped: skippedIds,
           conflicting: conflictingList,
           failed: [],
+          partialTargets: [],
           recalculationFailed: false,
         },
       };
@@ -497,9 +500,34 @@ export class PricingService {
       };
     }>;
 
+    // Categorize non-conflicting recommendations by target availability.
+    // A recommendation is only "fully applied" when every target resource exists.
+    const existingNodeIds = new Set(nodes.map((n) => n.id));
+    const fullyTargetedRecIds = new Set<string>();
+    const partialTargetRecIds: string[] = [];
+    const missingTargetRecIds: string[] = [];
+
+    for (const rec of nonConflictingRecs) {
+      const existingTargets = rec.affectedResourceIds.filter((rid) =>
+        existingNodeIds.has(rid),
+      );
+      if (existingTargets.length === 0) {
+        missingTargetRecIds.push(rec.recommendationId);
+      } else if (existingTargets.length < rec.affectedResourceIds.length) {
+        partialTargetRecIds.push(rec.recommendationId);
+      } else {
+        fullyTargetedRecIds.add(rec.recommendationId);
+      }
+    }
+
     const modifiedNodes = nodes.map((node) => {
-      const applicableRecs = nonConflictingRecs.filter((r) =>
-        r.affectedResourceIds.includes(node.id),
+      // Apply to this node only recommendations that target it and whose
+      // targets at least partially exist (skip recommendations whose targets
+      // are all missing).
+      const applicableRecs = nonConflictingRecs.filter(
+        (r) =>
+          r.affectedResourceIds.includes(node.id) &&
+          !missingTargetRecIds.includes(r.recommendationId),
       );
 
       if (applicableRecs.length === 0) return node;
@@ -510,8 +538,12 @@ export class PricingService {
         {} as Record<string, unknown>,
       );
 
+      // Only fully-targeted recommendations are marked as applied.
       for (const rec of applicableRecs) {
-        if (!appliedIds.includes(rec.recommendationId)) {
+        if (
+          fullyTargetedRecIds.has(rec.recommendationId) &&
+          !appliedIds.includes(rec.recommendationId)
+        ) {
           appliedIds.push(rec.recommendationId);
         }
       }
@@ -546,26 +578,29 @@ export class PricingService {
           skipped: [],
           conflicting: conflictingList,
           failed: failedIds,
+          partialTargets: [],
           recalculationFailed: false,
         },
       };
     }
 
-    // Mark skipped (pending but not applied due to being on resources with conflicts)
+    // Mark skipped (pending but not applied: conflicts, partial targets, or missing targets)
     for (const rec of recommendations) {
-      if (!appliedIds.includes(rec.recommendationId) && !conflictingIds.has(rec.recommendationId)) {
+      if (
+        !appliedIds.includes(rec.recommendationId) &&
+        !conflictingIds.has(rec.recommendationId) &&
+        !partialTargetRecIds.includes(rec.recommendationId) &&
+        !missingTargetRecIds.includes(rec.recommendationId)
+      ) {
         skippedIds.push(rec.recommendationId);
       }
     }
 
-    // Track recommendations whose target resources don't exist in the architecture
-    const existingNodeIds = new Set(nodes.map((n) => n.id));
-    for (const rec of nonConflictingRecs) {
-      const hasAnyTarget = rec.affectedResourceIds.some((rid) => existingNodeIds.has(rid));
-      if (!hasAnyTarget && !appliedIds.includes(rec.recommendationId)) {
-        failedIds.push(rec.recommendationId);
-      }
-    }
+    // Partial targets: some target resources exist, some don't.
+    partialTargets.push(...partialTargetRecIds);
+
+    // Failed: none of the target resources exist.
+    failedIds.push(...missingTargetRecIds);
 
     // Recalculate cost with all optimizations applied
     let result: CostEstimationResult;
@@ -584,6 +619,7 @@ export class PricingService {
         skipped: skippedIds,
         conflicting: conflictingList,
         failed: failedIds,
+        partialTargets: partialTargets,
         recalculationFailed,
       },
     };

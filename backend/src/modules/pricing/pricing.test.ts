@@ -2507,6 +2507,23 @@ describe('AWS Cost Estimation Engine & Intelligent Optimization (Phase 08)', () 
       expect(result.summary.skipped).toHaveLength(0);
       expect(result.summary.conflicting).toHaveLength(0);
       expect(result.summary.failed).toHaveLength(0);
+      expect(result.summary.partialTargets).toHaveLength(0);
+    });
+
+    it('handles partial target availability (some targets exist, some missing)', async () => {
+      const recs = [
+        makeRecommendation({ recommendationId: 'REC-1', affectedResourceIds: ['ec2-1', 'missing-resource'], proposedConfiguration: { instance_type: 't4g.micro' } }),
+      ];
+      mockCalculateCost(recs);
+
+      const result = await PricingService.applyAllOptimizations('arch-1', 'user-1');
+
+      // ec2-1 exists, missing-resource doesn't → partial target
+      expect(result.summary.applied).toHaveLength(0);
+      expect(result.summary.partialTargets).toHaveLength(1);
+      expect(result.summary.partialTargets[0]).toBe('REC-1');
+      expect(result.summary.failed).toHaveLength(0);
+      expect(result.summary.conflicting).toHaveLength(0);
     });
 
     it('returns unambiguous result when cost recalculation fails after DB update', async () => {
