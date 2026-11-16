@@ -20,6 +20,7 @@ interface CostOptimizationSectionProps {
   onApplyAll?: () => Promise<{
     applied: string[];
     skipped: string[];
+    partialTargets: string[];
     conflicting: Array<{
       recommendationId: string;
       title: string;
@@ -27,6 +28,7 @@ interface CostOptimizationSectionProps {
       conflictingWith: string[];
     }>;
     failed: string[];
+    recalculationFailed: boolean;
   }>;
 }
 
@@ -42,6 +44,7 @@ export const CostOptimizationSection: React.FC<CostOptimizationSectionProps> = (
   const [applyAllResult, setApplyAllResult] = useState<{
     applied: string[];
     skipped: string[];
+    partialTargets: string[];
     conflicting: Array<{
       recommendationId: string;
       title: string;
@@ -49,6 +52,7 @@ export const CostOptimizationSection: React.FC<CostOptimizationSectionProps> = (
       conflictingWith: string[];
     }>;
     failed: string[];
+    recalculationFailed: boolean;
   } | null>(null);
 
   const handleApplyClick = async (recId: string) => {
@@ -67,7 +71,8 @@ export const CostOptimizationSection: React.FC<CostOptimizationSectionProps> = (
     try {
       const result = await onApplyAll?.();
       if (result) {
-        // Deduplicate and only mark recommendations the backend actually applied
+        // Deduplicate and only mark recommendations the backend actually applied.
+        // Partial targets are NOT applied — they are shown separately.
         const next = [...new Set([...appliedIds, ...result.applied])];
         setAppliedIds(next);
         setApplyAllResult(result);
@@ -152,6 +157,10 @@ export const CostOptimizationSection: React.FC<CostOptimizationSectionProps> = (
             <div className="text-[10px] uppercase font-bold text-slate-400 mb-1">Failed</div>
             <div className="text-sm font-semibold text-slate-100">{applyAllResult.failed.length}</div>
           </div>
+          <div className="p-3 rounded-md bg-yellow-500/10 border border-yellow-500/20">
+            <div className="text-[10px] uppercase font-bold text-yellow-300 mb-1">Partial Targets</div>
+            <div className="text-sm font-semibold text-slate-100">{applyAllResult.partialTargets.length}</div>
+          </div>
         </div>
       )}
 
@@ -209,6 +218,39 @@ export const CostOptimizationSection: React.FC<CostOptimizationSectionProps> = (
               </ul>
             </div>
           )}
+          {applyAllResult.partialTargets.length > 0 && (
+            <div className="p-3 rounded-md bg-yellow-500/10 border border-yellow-500/20 mb-3">
+              <div className="flex items-center gap-2 mb-2">
+                <Minus className="w-4 h-4 text-yellow-400" />
+                <h4 className="text-sm font-semibold text-yellow-300">Partial Target Recommendations</h4>
+              </div>
+              <p className="text-xs text-slate-300 mb-2">
+                These recommendations target resources that partially exist. No changes were applied to any resource for these.
+              </p>
+              <ul className="text-xs text-slate-300 space-y-1">
+                {applyAllResult.partialTargets.map((id) => {
+                  const rec = recommendations.find((r) => r.recommendationId === id);
+                  return (
+                    <li key={id} className="text-yellow-300 flex items-center gap-2">
+                      <Minus className="w-3 h-3 text-yellow-400" />
+                      <span>{rec?.title || id}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+          {applyAllResult.recalculationFailed && (
+            <div className="p-3 rounded-md bg-rose-500/10 border border-rose-500/20 mb-3">
+              <div className="flex items-center gap-2 mb-2">
+                <AlertCircle className="w-4 h-4 text-rose-400" />
+                <h4 className="text-sm font-semibold text-rose-300">Cost Recalculation Failed</h4>
+              </div>
+              <p className="text-xs text-rose-300">
+                Database updates were applied, but the optimized cost could not be recalculated. Please retry.
+              </p>
+            </div>
+          )}
         </div>
       )}
 
@@ -222,14 +264,17 @@ export const CostOptimizationSection: React.FC<CostOptimizationSectionProps> = (
           const applyAllStatus =
             applyAllResult?.conflicting.find((c) => c.recommendationId === rec.recommendationId)
               ? 'conflicting'
-              : applyAllResult?.skipped.includes(rec.recommendationId)
-                ? 'skipped'
-                : applyAllResult?.failed.includes(rec.recommendationId)
-                  ? 'failed'
-                  : null;
+              : applyAllResult?.partialTargets.includes(rec.recommendationId)
+                ? 'partial'
+                : applyAllResult?.skipped.includes(rec.recommendationId)
+                  ? 'skipped'
+                  : applyAllResult?.failed.includes(rec.recommendationId)
+                    ? 'failed'
+                    : null;
 
           const statusConfig = {
             applied: { label: 'Applied', color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/30', icon: <CheckCircle className="w-3.5 h-3.5" /> },
+            partial: { label: 'Partial Targets', color: 'text-yellow-400', bg: 'bg-yellow-500/10', border: 'border-yellow-500/30', icon: <Minus className="w-3.5 h-3.5" /> },
             conflicting: { label: 'Conflicting', color: 'text-rose-400', bg: 'bg-rose-500/10', border: 'border-rose-500/30', icon: <ShieldAlert className="w-3.5 h-3.5" /> },
             skipped: { label: 'Skipped', color: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/30', icon: <Minus className="w-3.5 h-3.5" /> },
             failed: { label: 'Failed', color: 'text-slate-400', bg: 'bg-slate-500/10', border: 'border-slate-700/60', icon: <AlertCircle className="w-3.5 h-3.5" /> },

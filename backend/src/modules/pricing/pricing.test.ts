@@ -2526,6 +2526,58 @@ describe('AWS Cost Estimation Engine & Intelligent Optimization (Phase 08)', () 
       expect(result.summary.conflicting).toHaveLength(0);
     });
 
+    it('partial recommendation does not modify any existing target resource', async () => {
+      const recs = [
+        makeRecommendation({ recommendationId: 'REC-1', affectedResourceIds: ['ec2-1', 'missing-resource'], proposedConfiguration: { instance_type: 't4g.micro' } }),
+      ];
+      mockCalculateCost(recs);
+
+      await PricingService.applyAllOptimizations('arch-1', 'user-1');
+
+      // ec2-1 exists but recommendation is partial → its metadata must NOT be updated
+      const updatedArch = mockArchitectures.find((a) => a.id === 'arch-1');
+      const ec2Node = updatedArch?.nodes.find((n: any) => n.id === 'ec2-1');
+      expect(ec2Node?.data.metadata).not.toMatchObject({ instance_type: 't4g.micro' });
+    });
+
+    it('fully available recommendation modifies all its target resources', async () => {
+      const recs = [
+        makeRecommendation({ recommendationId: 'REC-1', affectedResourceIds: ['ec2-1', 'ec2-2'], proposedConfiguration: { instance_type: 't4g.micro' } }),
+      ];
+      mockCalculateCost(recs);
+
+      const result = await PricingService.applyAllOptimizations('arch-1', 'user-1');
+
+      expect(result.summary.applied).toHaveLength(1);
+      expect(result.summary.partialTargets).toHaveLength(0);
+      expect(result.summary.failed).toHaveLength(0);
+
+      // Both ec2-1 and ec2-2 should have the updated metadata
+      const updatedArch = mockArchitectures.find((a) => a.id === 'arch-1');
+      const ec21Node = updatedArch?.nodes.find((n: any) => n.id === 'ec2-1');
+      const ec22Node = updatedArch?.nodes.find((n: any) => n.id === 'ec2-2');
+      expect(ec21Node?.data.metadata).toMatchObject({ instance_type: 't4g.micro' });
+      expect(ec22Node?.data.metadata).toMatchObject({ instance_type: 't4g.micro' });
+    });
+
+    it('missing-target recommendation modifies nothing', async () => {
+      const recs = [
+        makeRecommendation({ recommendationId: 'REC-1', affectedResourceIds: ['nonexistent-resource'], proposedConfiguration: { instance_type: 't4g.micro' } }),
+      ];
+      mockCalculateCost(recs);
+
+      const result = await PricingService.applyAllOptimizations('arch-1', 'user-1');
+
+      expect(result.summary.applied).toHaveLength(0);
+      expect(result.summary.failed).toHaveLength(1);
+      expect(result.summary.partialTargets).toHaveLength(0);
+
+      // No nodes should have been modified
+      const updatedArch = mockArchitectures.find((a) => a.id === 'arch-1');
+      const ec21Node = updatedArch?.nodes.find((n: any) => n.id === 'ec2-1');
+      expect(ec21Node?.data.metadata).not.toMatchObject({ instance_type: 't4g.micro' });
+    });
+
     it('returns unambiguous result when cost recalculation fails after DB update', async () => {
       const recs = [makeRecommendation()];
       mockCalculateCost(recs);

@@ -522,12 +522,13 @@ export class PricingService {
 
     const modifiedNodes = nodes.map((node) => {
       // Apply to this node only recommendations that target it and whose
-      // targets at least partially exist (skip recommendations whose targets
-      // are all missing).
+      // targets are ALL available. Partial targets (some missing) must not
+      // modify any resource; missing-target recommendations must not either.
       const applicableRecs = nonConflictingRecs.filter(
         (r) =>
           r.affectedResourceIds.includes(node.id) &&
-          !missingTargetRecIds.includes(r.recommendationId),
+          !missingTargetRecIds.includes(r.recommendationId) &&
+          !partialTargetRecIds.includes(r.recommendationId),
       );
 
       if (applicableRecs.length === 0) return node;
