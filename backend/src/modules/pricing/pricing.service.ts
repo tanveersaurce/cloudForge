@@ -345,7 +345,20 @@ export class PricingService {
   public static async applyAllOptimizations(
     architectureId: string,
     userId: string,
-  ): Promise<CostEstimationResult> {
+  ): Promise<{
+    result: CostEstimationResult;
+    summary: {
+      applied: string[];
+      skipped: string[];
+      conflicting: Array<{
+        recommendationId: string;
+        title: string;
+        reason: string;
+        conflictingWith: string[];
+      }>;
+      failed: string[];
+    };
+  }> {
     const arch = await prisma.architecture.findUnique({
       where: { id: architectureId },
     });
@@ -359,7 +372,115 @@ export class PricingService {
     const recommendations = current.recommendations.filter((r) => r.status === 'pending');
 
     if (recommendations.length === 0) {
-      return current;
+      return {
+        result: current,
+        summary: { applied: [], skipped: [], conflicting: [], failed: [] },
+      };
+    }
+
+    // --- Step 1: Conflict Detection ---
+    // Group recommendations by affected resource ID
+    const recsByResource = new Map<string, typeof recommendations>();
+    for (const rec of recommendations) {
+      for (const resId of rec.affectedResourceIds) {
+        const list = recsByResource.get(resId) ?? [];
+        list.push(rec);
+        recsByResource.set(resId, list);
+      }
+    }
+
+    // Find conflicting recommendations: same resource, same config key, different value
+    const conflictingIds = new Set<string>();
+    const conflictingDetails = new Map<
+      string,
+      { title: string; reason: string; conflictingWith: string[] }
+    >();
+
+    for (const [resId, recs] of recsByResource) {
+      if (recs.length <= 1) continue;
+
+      // Compare each pair of recommendations on this resource
+      for (let i = 0; i < recs.length; i++) {
+        for (let j = i + 1; j < recs.length; j++) {
+          const a = recs[i];
+          const b = recs[j];
+          const conflictKeys: string[] = [];
+
+          const aKeys = Object.keys(a.proposedConfiguration || {});
+
+          for (const key of aKeys) {
+            if (key in b.proposedConfiguration) {
+              const aVal = JSON.stringify(a.proposedConfiguration[key]);
+              const bVal = JSON.stringify(b.proposedConfiguration[key]);
+              if (aVal !== bVal) {
+                conflictKeys.push(key);
+              }
+            }
+          }
+
+          if (conflictKeys.length > 0) {
+            conflictingIds.add(a.recommendationId);
+            conflictingIds.add(b.recommendationId);
+
+            const reason = `Conflicting configuration on resource "${resId}": ${conflictKeys.join(', ')}`;
+            if (!conflictingDetails.has(a.recommendationId)) {
+              conflictingDetails.set(a.recommendationId, {
+                title: a.title,
+                reason,
+                conflictingWith: [b.recommendationId],
+              });
+            } else {
+              const d = conflictingDetails.get(a.recommendationId)!;
+              if (!d.conflictingWith.includes(b.recommendationId)) {
+                d.conflictingWith.push(b.recommendationId);
+              }
+            }
+
+            if (!conflictingDetails.has(b.recommendationId)) {
+              conflictingDetails.set(b.recommendationId, {
+                title: b.title,
+                reason,
+                conflictingWith: [a.recommendationId],
+              });
+            } else {
+              const d = conflictingDetails.get(b.recommendationId)!;
+              if (!d.conflictingWith.includes(a.recommendationId)) {
+                d.conflictingWith.push(a.recommendationId);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    const conflictingList = Array.from(conflictingDetails.entries()).map(
+      ([recommendationId, detail]) => ({
+        recommendationId,
+        title: detail.title,
+        reason: detail.reason,
+        conflictingWith: detail.conflictingWith,
+      }),
+    );
+
+    // --- Step 2: Apply only non-conflicting recommendations ---
+    const nonConflictingRecs = recommendations.filter(
+      (r) => !conflictingIds.has(r.recommendationId),
+    );
+
+    const appliedIds: string[] = [];
+    const skippedIds: string[] = [];
+    const failedIds: string[] = [];
+
+    if (nonConflictingRecs.length === 0) {
+      return {
+        result: current,
+        summary: {
+          applied: [],
+          skipped: skippedIds,
+          conflicting: conflictingList,
+          failed: [],
+        },
+      };
     }
 
     const nodes = (Array.isArray(arch.nodes) ? arch.nodes : []) as Array<{
@@ -375,16 +496,19 @@ export class PricingService {
     }>;
 
     const modifiedNodes = nodes.map((node) => {
-      const applicableRecs = recommendations.filter((r) =>
-        r.affectedResourceIds.includes(node.id)
+      const applicableRecs = nonConflictingRecs.filter((r) =>
+        r.affectedResourceIds.includes(node.id),
       );
 
       if (applicableRecs.length === 0) return node;
 
+      // Merge all proposed configurations; later recs override earlier ones
       const mergedMetadata = applicableRecs.reduce(
         (acc, rec) => ({ ...acc, ...rec.proposedConfiguration }),
-        {} as Record<string, unknown>
+        {} as Record<string, unknown>,
       );
+
+      appliedIds.push(...applicableRecs.map((r) => r.recommendationId));
 
       return {
         ...node,
@@ -398,14 +522,46 @@ export class PricingService {
       };
     });
 
-    await prisma.architecture.update({
-      where: { id: architectureId },
-      data: {
-        nodes: modifiedNodes as unknown as Prisma.InputJsonValue,
-        updatedAt: new Date(),
-      },
-    });
+    try {
+      await prisma.architecture.update({
+        where: { id: architectureId },
+        data: {
+          nodes: modifiedNodes as unknown as Prisma.InputJsonValue,
+          updatedAt: new Date(),
+        },
+      });
+    } catch (err) {
+      // Transaction failed — nothing was applied
+      failedIds.push(...nonConflictingRecs.map((r) => r.recommendationId));
+      return {
+        result: current,
+        summary: {
+          applied: [],
+          skipped: [],
+          conflicting: conflictingList,
+          failed: failedIds,
+        },
+      };
+    }
 
-    return this.calculateCost(architectureId, userId);
+    // Mark skipped (pending but not applied due to being on resources with conflicts)
+    for (const rec of recommendations) {
+      if (!appliedIds.includes(rec.recommendationId) && !conflictingIds.has(rec.recommendationId)) {
+        skippedIds.push(rec.recommendationId);
+      }
+    }
+
+    // Recalculate cost with all optimizations applied
+    const result = await this.calculateCost(architectureId, userId);
+
+    return {
+      result,
+      summary: {
+        applied: appliedIds,
+        skipped: skippedIds,
+        conflicting: conflictingList,
+        failed: failedIds,
+      },
+    };
   }
 }

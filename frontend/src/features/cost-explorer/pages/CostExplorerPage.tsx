@@ -32,6 +32,7 @@ export const CostExplorerPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isAssumptionsModalOpen, setIsAssumptionsModalOpen] = useState(false);
+  const [appliedIds, setAppliedIds] = useState<string[]>([]);
 
   const loadCostData = useCallback(async () => {
     if (!architectureId) return;
@@ -107,8 +108,11 @@ export const CostExplorerPage: React.FC = () => {
   const handleApplyAll = async () => {
     if (!architectureId) return;
     try {
-      const recalculated = await applyAllCostOptimizationsApi(architectureId);
-      setEstimate(recalculated);
+      const data = await applyAllCostOptimizationsApi(architectureId);
+      setEstimate(data.estimate);
+      if (data.summary.applied.length > 0) {
+        setAppliedIds((prev) => [...prev, ...data.summary.applied]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to apply all optimizations');
     }

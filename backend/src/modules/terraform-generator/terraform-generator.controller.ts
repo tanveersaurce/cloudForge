@@ -15,13 +15,19 @@ interface TerraformGenerateResponse {
   files: Array<{ filename: string; content: string }>;
   hcl: string;
   totalFiles: number;
+  issues: Array<{
+    nodeId: string;
+    resourceType: string;
+    missing: string;
+    severity: 'error' | 'warning';
+  }>;
 }
 
 export const handleGenerateTerraform = asyncHandler(async (req: Request, res: Response) => {
   const userId = requireAuthenticatedUserId(req);
   const { id } = req.params;
 
-  const { files, hcl } = await TerraformGenerator.generateAndSave(id, userId);
+  const { files, hcl, issues } = await TerraformGenerator.generateAndSave(id, userId);
 
   const response: ApiResponse<TerraformGenerateResponse> = {
     success: true,
@@ -29,6 +35,7 @@ export const handleGenerateTerraform = asyncHandler(async (req: Request, res: Re
       files,
       hcl,
       totalFiles: files.length,
+      issues,
     },
     timestamp: new Date().toISOString(),
   };

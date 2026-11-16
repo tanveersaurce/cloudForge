@@ -64,10 +64,25 @@ export async function applyCostOptimizationApi(
   return res.data;
 }
 
+export interface ApplyAllResult {
+  estimate: CostEstimationResult;
+  summary: {
+    applied: string[];
+    skipped: string[];
+    conflicting: Array<{
+      recommendationId: string;
+      title: string;
+      reason: string;
+      conflictingWith: string[];
+    }>;
+    failed: string[];
+  };
+}
+
 export async function applyAllCostOptimizationsApi(
   architectureId: string,
-): Promise<CostEstimationResult> {
-  const res = await apiFetch<ApiSuccessResponse<CostEstimationResult>>(
+): Promise<ApplyAllResult> {
+  const res = await apiFetch<ApiSuccessResponse<ApplyAllResult>>(
     `/architectures/${encodeURIComponent(architectureId)}/cost-optimizations/apply-all`,
     {
       method: 'POST',

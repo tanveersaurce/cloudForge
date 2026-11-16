@@ -6,10 +6,18 @@ export interface TerraformFile {
   content: string;
 }
 
+export interface TerraformIssue {
+  nodeId: string;
+  resourceType: string;
+  missing: string;
+  severity: 'error' | 'warning';
+}
+
 export interface TerraformGenerateResponse {
   files: TerraformFile[];
   hcl: string;
   totalFiles: number;
+  issues: TerraformIssue[];
 }
 
 export async function generateTerraformApi(

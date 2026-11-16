@@ -120,10 +120,10 @@ export const handleApplyAllOptimizations = asyncHandler(async (req: Request, res
   const userId = requireAuthenticatedUserId(req);
   const { id } = req.params;
 
-  const result = await PricingService.applyAllOptimizations(id, userId);
-  const response: ApiResponse<CostEstimationResult> = {
+  const { result, summary } = await PricingService.applyAllOptimizations(id, userId);
+  const response: ApiResponse<{ estimate: CostEstimationResult; summary: typeof summary }> = {
     success: true,
-    data: result,
+    data: { estimate: result, summary },
     timestamp: new Date().toISOString(),
   };
   res.status(200).json(response);

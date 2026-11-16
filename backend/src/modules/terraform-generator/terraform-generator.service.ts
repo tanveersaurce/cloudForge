@@ -5,8 +5,12 @@ import { ApiError } from '../../utils/ApiError.js';
  * Terraform HCL Generator for CloudForge
  *
  * Converts architecture canvas nodes/edges into HashiCorp Terraform HCL.
- * Supports core AWS resources: VPC, Subnet, EC2, RDS, S3, Security Group,
- * Internet Gateway, NAT Gateway, ALB, Lambda, DynamoDB, IAM Role, KMS Key.
+ * Uses actual architecture edges for dependency resolution instead of
+ * relying solely on stored metadata IDs.
+ *
+ * Supported AWS resources: VPC, Subnet, EC2, RDS, S3, Security Group,
+ * Internet Gateway, NAT Gateway (+ Elastic IP), ALB, Lambda, DynamoDB,
+ * IAM Role, KMS Key.
  */
 
 interface TerraformNodeInput {
@@ -28,6 +32,13 @@ interface TerraformEdgeInput {
 interface TerraformFile {
   filename: string;
   content: string;
+}
+
+interface DependencyIssue {
+  nodeId: string;
+  resourceType: string;
+  missing: string;
+  severity: 'error' | 'warning';
 }
 
 function hclString(value: string): string {
@@ -81,36 +92,199 @@ function safeResourceName(label?: string, resourceType?: string, id?: string): s
   return base || `resource_${id?.slice(-6) || 'unk'}`;
 }
 
-function getVpcId(nodes: TerraformNodeInput[], nodeId: string): string | null {
-  const node = nodes.find((n) => n.id === nodeId);
-  if (!node) return null;
-  const vpcId = node.metadata?.vpc_id as string | undefined;
-  return vpcId ?? null;
+function uniqueResourceName(
+  usedNames: Set<string>,
+  label?: string,
+  resourceType?: string,
+  id?: string,
+): string {
+  let name = safeResourceName(label, resourceType, id);
+  let counter = 1;
+  const original = name;
+  while (usedNames.has(name)) {
+    name = `${original}_${counter}`;
+    counter++;
+  }
+  usedNames.add(name);
+  return name;
 }
 
-function getSubnetId(nodes: TerraformNodeInput[], nodeId: string): string | null {
-  const node = nodes.find((n) => n.id === nodeId);
+/**
+ * Resolve which VPC a resource belongs to by walking edges.
+ * Follows 'contains' relationships from VPC -> Subnet -> Resource.
+ */
+function resolveVpcId(
+  nodes: Map<string, TerraformNodeInput>,
+  edges: TerraformEdgeInput[],
+  nodeId: string,
+): string | null {
+  const node = nodes.get(nodeId);
   if (!node) return null;
+
+  // Direct VPC node
+  if (node.resourceType === 'aws_vpc') return nodeId;
+
+  // Find VPC via 'contains' edge: VPC contains this node
+  for (const edge of edges) {
+    if (edge.target === nodeId && edge.relationshipType === 'contains') {
+      const source = nodes.get(edge.source);
+      if (source?.resourceType === 'aws_vpc') return edge.source;
+      // Recursively: source might be a subnet that contains this node
+      const vpc = resolveVpcId(nodes, edges, edge.source);
+      if (vpc) return vpc;
+    }
+  }
+
+  // Fallback: check metadata
+  const vpcId = node.metadata?.vpc_id as string | undefined;
+  if (vpcId && nodes.has(vpcId)) return vpcId;
+
+  return null;
+}
+
+/**
+ * Resolve which Subnet a resource is placed in via edges.
+ */
+function resolveSubnetId(
+  nodes: Map<string, TerraformNodeInput>,
+  edges: TerraformEdgeInput[],
+  nodeId: string,
+): string | null {
+  const node = nodes.get(nodeId);
+  if (!node) return null;
+
+  // Direct subnet node
+  if (node.resourceType === 'aws_subnet') return nodeId;
+
+  // Find subnet via 'contains' edge: Subnet contains this node
+  for (const edge of edges) {
+    if (edge.target === nodeId && edge.relationshipType === 'contains') {
+      const source = nodes.get(edge.source);
+      if (source?.resourceType === 'aws_subnet') return edge.source;
+    }
+  }
+
+  // Fallback: check metadata
   const subnetId = node.metadata?.subnet_id as string | undefined;
-  return subnetId ?? null;
+  if (subnetId && nodes.has(subnetId)) return subnetId;
+
+  return null;
+}
+
+/**
+ * Collect dependency issues for missing/unresolved relationships.
+ */
+function collectDependencyIssues(
+  nodes: Map<string, TerraformNodeInput>,
+  edges: TerraformEdgeInput[],
+): DependencyIssue[] {
+  const issues: DependencyIssue[] = [];
+
+  for (const [nodeId, node] of nodes) {
+    if (node.resourceType === 'aws_subnet') {
+      const vpc = resolveVpcId(nodes, edges, nodeId);
+      if (!vpc) {
+        issues.push({
+          nodeId,
+          resourceType: 'aws_subnet',
+          missing: 'VPC (subnet must be contained in a VPC)',
+          severity: 'error',
+        });
+      }
+    }
+
+    if (
+      node.resourceType === 'aws_instance' ||
+      node.resourceType === 'aws_db_instance' ||
+      node.resourceType === 'aws_nat_gateway'
+    ) {
+      const subnet = resolveSubnetId(nodes, edges, nodeId);
+      if (!subnet) {
+        issues.push({
+          nodeId,
+          resourceType: node.resourceType,
+          missing: 'Subnet (resource must be placed in a subnet)',
+          severity: 'error',
+        });
+      }
+    }
+
+    if (node.resourceType === 'aws_internet_gateway') {
+      const vpc = resolveVpcId(nodes, edges, nodeId);
+      if (!vpc) {
+        issues.push({
+          nodeId,
+          resourceType: 'aws_internet_gateway',
+          missing: 'VPC (internet gateway must attach to a VPC)',
+          severity: 'error',
+        });
+      }
+    }
+
+    if (node.resourceType === 'aws_security_group') {
+      const vpc = resolveVpcId(nodes, edges, nodeId);
+      if (!vpc) {
+        issues.push({
+          nodeId,
+          resourceType: 'aws_security_group',
+          missing: 'VPC (security group must belong to a VPC)',
+          severity: 'error',
+        });
+      }
+    }
+
+    if (node.resourceType === 'aws_nat_gateway') {
+      const subnet = resolveSubnetId(nodes, edges, nodeId);
+      if (!subnet) {
+        issues.push({
+          nodeId,
+          resourceType: 'aws_nat_gateway',
+          missing: 'Subnet (NAT gateway must be in a public subnet)',
+          severity: 'error',
+        });
+      }
+    }
+
+    if (node.resourceType === 'aws_db_instance') {
+      const vpc = resolveVpcId(nodes, edges, nodeId);
+      if (!vpc) {
+        issues.push({
+          nodeId,
+          resourceType: 'aws_db_instance',
+          missing: 'VPC (database must be in a VPC)',
+          severity: 'warning',
+        });
+      }
+    }
+  }
+
+  return issues;
 }
 
 export class TerraformGenerator {
   /**
    * Generate HCL files for an architecture.
-   * Returns an array of { filename, content } ready to write as .tf files.
+   * Uses edges for dependency resolution. Reports missing dependencies
+   * as HCL comments instead of silently generating invalid references.
    */
   public static generate(
     architectureName: string,
     region: string,
     nodes: TerraformNodeInput[],
-    _edges: TerraformEdgeInput[],
-  ): TerraformFile[] {
+    edges: TerraformEdgeInput[],
+  ): { files: TerraformFile[]; issues: DependencyIssue[] } {
     const files: TerraformFile[] = [];
+    const usedNames = new Set<string>();
+    const issues = collectDependencyIssues(
+      new Map(nodes.map((n) => [n.id, n])),
+      edges,
+    );
+
+    const nodeMap = new Map(nodes.map((n) => [n.id, n]));
 
     // Provider block
     files.push({
-      filename: 'provider.tf',
+      filename: 'versions.tf',
       content: `terraform {
   required_version = ">= 1.5"
   required_providers {
@@ -120,18 +294,19 @@ export class TerraformGenerator {
     }
   }
 }
+`,
+    });
 
-provider "aws" {
+    files.push({
+      filename: 'provider.tf',
+      content: `provider "aws" {
   region = var.aws_region
 }
 `,
     });
 
     // Variables
-    files.push({
-      filename: 'variables.tf',
-      content: hclVariable('aws_region', 'string', `"${region}"`),
-    });
+    let variablesContent = hclVariable('aws_region', 'string', `"${region}"`);
 
     // Group nodes by type
     const byType = new Map<string, TerraformNodeInput[]>();
@@ -143,8 +318,15 @@ provider "aws" {
 
     // 1. VPCs
     const vpcs = byType.get('aws_vpc') ?? [];
+    const vpcRefs = new Map<string, string>(); // nodeId -> terraform resource name
     for (const vpc of vpcs) {
-      const name = safeResourceName(vpc.label, 'aws_vpc', vpc.id);
+      const name = uniqueResourceName(
+        usedNames,
+        vpc.label,
+        'aws_vpc',
+        vpc.id,
+      );
+      vpcRefs.set(vpc.id, name);
       const cidr = (vpc.metadata?.cidr_block as string) || '10.0.0.0/16';
       const dnsHostnames = vpc.metadata?.enable_dns_hostnames === true;
       const dnsSupport = vpc.metadata?.enable_dns_support !== false;
@@ -164,22 +346,36 @@ provider "aws" {
       });
     }
 
+    if (vpcs.length > 0) {
+      variablesContent += hclVariable(
+        'vpc_id',
+        'string',
+        '""',
+      );
+    }
+
     // 2. Subnets
     const subnets = byType.get('aws_subnet') ?? [];
+    const subnetRefs = new Map<string, string>(); // nodeId -> terraform resource name
     for (const subnet of subnets) {
-      const name = safeResourceName(subnet.label, 'aws_subnet', subnet.id);
+      const name = uniqueResourceName(
+        usedNames,
+        subnet.label,
+        'aws_subnet',
+        subnet.id,
+      );
+      subnetRefs.set(subnet.id, name);
       const cidr = (subnet.metadata?.cidr_block as string) || '10.0.1.0/24';
-      const vpcId = getVpcId(nodes, subnet.id);
-
-      const blocks: string[] = [];
-      if (vpcId) {
-        blocks.push(`  vpc_id = aws_vpc.${safeResourceName(undefined, 'aws_vpc', vpcId)}`);
-      } else {
-        blocks.push(`  vpc_id = var.vpc_id  // TODO: set to your VPC ID`);
-      }
-
+      const vpcNodeId = resolveVpcId(nodeMap, edges, subnet.id);
       const az = (subnet.metadata?.availability_zone as string) || `${region}a`;
       const mapPublicIp = subnet.metadata?.map_public_ip_on_launch === true;
+
+      const blocks: string[] = [];
+      if (vpcNodeId && vpcRefs.has(vpcNodeId)) {
+        blocks.push(`  vpc_id = aws_vpc.${vpcRefs.get(vpcNodeId)}`);
+      } else if (vpcs.length > 0) {
+        blocks.push(`  vpc_id = var.vpc_id  // TODO: associate with correct VPC`);
+      }
 
       files.push({
         filename: `subnet/${name}.tf`,
@@ -197,17 +393,28 @@ provider "aws" {
       });
     }
 
+    if (subnets.length > 0) {
+      variablesContent += hclVariable('subnet_ids', 'list(string)', '[]');
+    }
+
     // 3. Internet Gateways
     const igws = byType.get('aws_internet_gateway') ?? [];
+    const igwRefs = new Map<string, string>();
     for (const igw of igws) {
-      const name = safeResourceName(igw.label, 'aws_internet_gateway', igw.id);
-      const vpcId = getVpcId(nodes, igw.id);
+      const name = uniqueResourceName(
+        usedNames,
+        igw.label,
+        'aws_internet_gateway',
+        igw.id,
+      );
+      igwRefs.set(igw.id, name);
+      const vpcNodeId = resolveVpcId(nodeMap, edges, igw.id);
 
       const blocks: string[] = [];
-      if (vpcId) {
-        blocks.push(`  vpc_id = aws_vpc.${safeResourceName(undefined, 'aws_vpc', vpcId)}`);
-      } else {
-        blocks.push(`  vpc_id = var.vpc_id  // TODO: set to your VPC ID`);
+      if (vpcNodeId && vpcRefs.has(vpcNodeId)) {
+        blocks.push(`  vpc_id = aws_vpc.${vpcRefs.get(vpcNodeId)}`);
+      } else if (vpcs.length > 0) {
+        blocks.push(`  vpc_id = var.vpc_id  // TODO: attach to correct VPC`);
       }
 
       files.push({
@@ -221,18 +428,43 @@ provider "aws" {
       });
     }
 
-    // 4. NAT Gateways
+    // 4. NAT Gateways + Elastic IPs
     const natGateways = byType.get('aws_nat_gateway') ?? [];
     for (const nat of natGateways) {
-      const name = safeResourceName(nat.label, 'aws_nat_gateway', nat.id);
-      const subnetId = getSubnetId(nodes, nat.id);
+      const name = uniqueResourceName(
+        usedNames,
+        nat.label,
+        'aws_nat_gateway',
+        nat.id,
+      );
+      const subnetNodeId = resolveSubnetId(nodeMap, edges, nat.id);
+
+      // Generate Elastic IP for public NAT Gateway
+      const eipName = uniqueResourceName(
+        usedNames,
+        `${nat.label || nat.id}-eip`,
+        'aws_eip',
+        `${nat.id}-eip`,
+      );
+      files.push({
+        filename: `nat-gateway/${name}-eip.tf`,
+        content: hclBlock(
+          'aws_eip',
+          eipName,
+          {
+            domain: 'vpc',
+            tags: { Name: `${nat.label || nat.id} Elastic IP` },
+          },
+        ),
+      });
 
       const blocks: string[] = [];
-      if (subnetId) {
-        blocks.push(`  subnet_id = aws_subnet.${safeResourceName(undefined, 'aws_subnet', subnetId)}`);
-      } else {
-        blocks.push(`  subnet_id = var.subnet_id  // TODO: set to your Subnet ID`);
+      if (subnetNodeId && subnetRefs.has(subnetNodeId)) {
+        blocks.push(`  subnet_id = aws_subnet.${subnetRefs.get(subnetNodeId)}`);
+      } else if (subnets.length > 0) {
+        blocks.push(`  subnet_id = var.subnet_ids[0]  // TODO: specify public subnet`);
       }
+      blocks.push(`  allocation_id = aws_eip.${eipName}.id`);
 
       files.push({
         filename: `nat-gateway/${name}.tf`,
@@ -250,28 +482,91 @@ provider "aws" {
 
     // 5. Security Groups
     const securityGroups = byType.get('aws_security_group') ?? [];
+    const sgRefs = new Map<string, string>();
     for (const sg of securityGroups) {
-      const name = safeResourceName(sg.label, 'aws_security_group', sg.id);
-      const vpcId = getVpcId(nodes, sg.id);
+      const name = uniqueResourceName(
+        usedNames,
+        sg.label,
+        'aws_security_group',
+        sg.id,
+      );
+      sgRefs.set(sg.id, name);
+      const vpcNodeId = resolveVpcId(nodeMap, edges, sg.id);
 
       const blocks: string[] = [];
-      if (vpcId) {
-        blocks.push(`  vpc_id = aws_vpc.${safeResourceName(undefined, 'aws_vpc', vpcId)}`);
-      } else {
-        blocks.push(`  vpc_id = var.vpc_id  // TODO: set to your VPC ID`);
+      if (vpcNodeId && vpcRefs.has(vpcNodeId)) {
+        blocks.push(`  vpc_id = aws_vpc.${vpcRefs.get(vpcNodeId)}`);
+      } else if (vpcs.length > 0) {
+        blocks.push(`  vpc_id = var.vpc_id  // TODO: associate with correct VPC`);
       }
 
-      const ingressRules = sg.metadata?.ingress_rules as Array<{ cidr_blocks?: string[]; from_port?: number; to_port?: number; protocol?: string; description?: string }> | undefined;
+      const ingressRules =
+        sg.metadata?.ingress_rules as
+          | Array<{
+              cidr_blocks?: string[];
+              from_port?: number;
+              to_port?: number;
+              protocol?: string;
+              description?: string;
+            }>
+          | undefined;
+
       if (ingressRules && ingressRules.length > 0) {
         for (const rule of ingressRules) {
           blocks.push(`  ingress {`);
-          blocks.push(`    description = ${hclString(rule.description || 'Ingress rule')}`);
+          blocks.push(
+            `    description = ${hclString(rule.description || 'Ingress rule')}`,
+          );
           blocks.push(`    from_port   = ${rule.from_port ?? 0}`);
           blocks.push(`    to_port     = ${rule.to_port ?? 0}`);
           blocks.push(`    protocol    = ${hclString(rule.protocol ?? 'tcp')}`);
-          blocks.push(`    cidr_blocks = ${JSON.stringify(rule.cidr_blocks ?? ['0.0.0.0/0'])}`);
+          blocks.push(
+            `    cidr_blocks = ${JSON.stringify(
+              rule.cidr_blocks ?? ['0.0.0.0/0'],
+            )}`,
+          );
           blocks.push(`  }`);
         }
+      } else {
+        // No ingress rules defined — explicitly note it (no unrestricted default)
+        blocks.push(`  # No ingress rules defined. Add ingress rules as needed.`);
+      }
+
+      const egressRules =
+        sg.metadata?.egress_rules as
+          | Array<{
+              cidr_blocks?: string[];
+              from_port?: number;
+              to_port?: number;
+              protocol?: string;
+              description?: string;
+            }>
+          | undefined;
+
+      if (egressRules && egressRules.length > 0) {
+        for (const rule of egressRules) {
+          blocks.push(`  egress {`);
+          blocks.push(
+            `    description = ${hclString(rule.description || 'Egress rule')}`,
+          );
+          blocks.push(`    from_port   = ${rule.from_port ?? 0}`);
+          blocks.push(`    to_port     = ${rule.to_port ?? 0}`);
+          blocks.push(`    protocol    = ${hclString(rule.protocol ?? 'tcp')}`);
+          blocks.push(
+            `    cidr_blocks = ${JSON.stringify(
+              rule.cidr_blocks ?? ['0.0.0.0/0'],
+            )}`,
+          );
+          blocks.push(`  }`);
+        }
+      } else {
+        blocks.push(`  egress {`);
+        blocks.push(`    description = "All outbound traffic"`);
+        blocks.push(`    from_port   = 0`);
+        blocks.push(`    to_port     = 0`);
+        blocks.push(`    protocol    = "-1"`);
+        blocks.push(`    cidr_blocks = ["0.0.0.0/0"]`);
+        blocks.push(`  }`);
       }
 
       files.push({
@@ -291,17 +586,46 @@ provider "aws" {
     // 6. EC2 Instances
     const instances = byType.get('aws_instance') ?? [];
     for (const inst of instances) {
-      const name = safeResourceName(inst.label, 'aws_instance', inst.id);
+      const name = uniqueResourceName(
+        usedNames,
+        inst.label,
+        'aws_instance',
+        inst.id,
+      );
       const instanceType = (inst.metadata?.instance_type as string) || 't3.micro';
-      const ami = (inst.metadata?.ami as string) || 'ami-0c55b159cbfafe1f0';
-      const subnetId = getSubnetId(nodes, inst.id);
+      const subnetNodeId = resolveSubnetId(nodeMap, edges, inst.id);
       const rootSize = Number(inst.metadata?.root_volume_size || 20);
 
+      // AMI: do NOT hardcode. Use variable placeholder with clear warning.
+      const ami = (inst.metadata?.ami as string) || 'var.ec2_ami';
+      if (!inst.metadata?.ami) {
+        issues.push({
+          nodeId: inst.id,
+          resourceType: 'aws_instance',
+          missing: 'AMI ID (not configured — using var.ec2_ami placeholder)',
+          severity: 'warning',
+        });
+      }
+
       const blocks: string[] = [];
-      if (subnetId) {
-        blocks.push(`  subnet_id = aws_subnet.${safeResourceName(undefined, 'aws_subnet', subnetId)}`);
-      } else {
-        blocks.push(`  subnet_id = var.subnet_id  // TODO: set to your Subnet ID`);
+      if (subnetNodeId && subnetRefs.has(subnetNodeId)) {
+        blocks.push(`  subnet_id = aws_subnet.${subnetRefs.get(subnetNodeId)}`);
+      } else if (subnets.length > 0) {
+        blocks.push(`  subnet_id = var.subnet_ids[0]  // TODO: specify subnet`);
+      }
+
+      // Attach security groups from edges (security group applied to instance)
+      const instanceSgs: string[] = [];
+      for (const edge of edges) {
+        if (edge.target === inst.id && edge.relationshipType === 'accesses') {
+          const sgNode = nodeMap.get(edge.source);
+          if (sgNode?.resourceType === 'aws_security_group' && sgRefs.has(edge.source)) {
+            instanceSgs.push(`aws_security_group.${sgRefs.get(edge.source)}.id`);
+          }
+        }
+      }
+      if (instanceSgs.length > 0) {
+        blocks.push(`  vpc_security_group_ids = [${instanceSgs.join(', ')}]`);
       }
 
       blocks.push(`  root_block_device {`);
@@ -316,7 +640,7 @@ provider "aws" {
           'aws_instance',
           name,
           {
-            ami: ami,
+            ami,
             instance_type: instanceType,
             tags: { Name: inst.label || name },
           },
@@ -325,15 +649,36 @@ provider "aws" {
       });
     }
 
+    if (instances.length > 0) {
+      variablesContent += hclVariable('ec2_ami', 'string');
+    }
+
     // 7. RDS Instances
     const rdsInstances = byType.get('aws_db_instance') ?? [];
     for (const rds of rdsInstances) {
-      const name = safeResourceName(rds.label, 'aws_db_instance', rds.id);
+      const name = uniqueResourceName(
+        usedNames,
+        rds.label,
+        'aws_db_instance',
+        rds.id,
+      );
       const engine = (rds.metadata?.engine as string) || 'postgres';
       const instanceClass = (rds.metadata?.instance_class as string) || 'db.t3.micro';
       const allocatedStorage = Number(rds.metadata?.allocated_storage || 20);
       const multiAz = rds.metadata?.multi_az === true;
       const storageEncrypted = rds.metadata?.storage_encrypted !== false;
+
+      const blocks: string[] = [];
+      // RDS credentials: never hardcode, use variable
+      blocks.push(`  username = var.db_username`);
+      blocks.push(`  password = var.db_password`);
+
+      const subnetNodeId = resolveSubnetId(nodeMap, edges, rds.id);
+      if (subnetNodeId && subnetRefs.has(subnetNodeId)) {
+        blocks.push(`  subnet_id = aws_subnet.${subnetRefs.get(subnetNodeId)}`);
+      } else if (subnets.length > 0) {
+        blocks.push(`  subnet_id = var.subnet_ids[0]  // TODO: specify subnet`);
+      }
 
       files.push({
         filename: `rds/${name}.tf`,
@@ -341,21 +686,32 @@ provider "aws" {
           'aws_db_instance',
           name,
           {
-            engine: engine,
+            engine,
             instance_class: instanceClass,
             allocated_storage: allocatedStorage,
             multi_az: multiAz,
             storage_encrypted: storageEncrypted,
             tags: { Name: rds.label || name },
           },
+          blocks,
         ),
       });
+    }
+
+    if (rdsInstances.length > 0) {
+      variablesContent += hclVariable('db_username', 'string');
+      variablesContent += hclVariable('db_password', 'string');
     }
 
     // 8. S3 Buckets
     const s3Buckets = byType.get('aws_s3_bucket') ?? [];
     for (const bucket of s3Buckets) {
-      const name = safeResourceName(bucket.label, 'aws_s3_bucket', bucket.id);
+      const name = uniqueResourceName(
+        usedNames,
+        bucket.label,
+        'aws_s3_bucket',
+        bucket.id,
+      );
       const bucketName = (bucket.metadata?.bucket as string) || name;
       const versioning = bucket.metadata?.versioning_enabled === true;
 
@@ -374,15 +730,7 @@ provider "aws" {
       if (versioning) {
         files.push({
           filename: `s3/${name}-versioning.tf`,
-          content: hclBlock(
-            'aws_s3_bucket_versioning',
-            `${name}-versioning`,
-            {
-              bucket: `aws_s3_bucket.${name}.id`,
-              versioning_configuration: { status: 'Enabled' },
-            },
-            [`  versioning_configuration { status = "Enabled" }`],
-          ),
+          content: `resource "aws_s3_bucket_versioning" "${name}-versioning" {\n  bucket = aws_s3_bucket.${name}.id\n  versioning_configuration {\n    status = "Enabled"\n  }\n}\n`,
         });
       }
     }
@@ -390,10 +738,42 @@ provider "aws" {
     // 9. DynamoDB Tables
     const dynamoTables = byType.get('aws_dynamodb_table') ?? [];
     for (const table of dynamoTables) {
-      const name = safeResourceName(table.label, 'aws_dynamodb_table', table.id);
+      const name = uniqueResourceName(
+        usedNames,
+        table.label,
+        'aws_dynamodb_table',
+        table.id,
+      );
       const tableName = (table.metadata?.name as string) || name;
       const hashKey = (table.metadata?.hash_key as string) || 'id';
+      const rangeKey = (table.metadata?.range_key as string) || null;
       const billingMode = (table.metadata?.billing_mode as string) || 'PAY_PER_REQUEST';
+
+      const attrBlocks: string[] = [
+        `  attribute {`,
+        `    name = ${hclString(hashKey)}`,
+        `    type = "S"`,
+        `  }`,
+      ];
+      if (rangeKey) {
+        attrBlocks.push(`  attribute {`);
+        attrBlocks.push(`    name = ${hclString(rangeKey)}`);
+        attrBlocks.push(`    type = "S"`);
+        attrBlocks.push(`  }`);
+      }
+
+      const keySchemaBlocks: string[] = [
+        `  key_schema {`,
+        `    attribute_name = ${hclString(hashKey)}`,
+        `    key_type       = "HASH"`,
+        `  }`,
+      ];
+      if (rangeKey) {
+        keySchemaBlocks.push(`  key_schema {`);
+        keySchemaBlocks.push(`    attribute_name = ${hclString(rangeKey)}`);
+        keySchemaBlocks.push(`    key_type       = "RANGE"`);
+        keySchemaBlocks.push(`  }`);
+      }
 
       files.push({
         filename: `dynamodb/${name}.tf`,
@@ -403,15 +783,9 @@ provider "aws" {
           {
             name: tableName,
             billing_mode: billingMode,
-            hash_key: hashKey,
             tags: { Name: table.label || name },
           },
-          [
-            `  attribute {`,
-            `    name = ${hclString(hashKey)}`,
-            `    type = "S"`,
-            `  }`,
-          ],
+          [...attrBlocks, ...keySchemaBlocks],
         ),
       });
     }
@@ -419,12 +793,29 @@ provider "aws" {
     // 10. Lambda Functions
     const lambdas = byType.get('aws_lambda_function') ?? [];
     for (const lambda of lambdas) {
-      const name = safeResourceName(lambda.label, 'aws_lambda_function', lambda.id);
+      const name = uniqueResourceName(
+        usedNames,
+        lambda.label,
+        'aws_lambda_function',
+        lambda.id,
+      );
       const functionName = (lambda.metadata?.function_name as string) || name;
       const runtime = (lambda.metadata?.runtime as string) || 'nodejs20.x';
       const handler = (lambda.metadata?.handler as string) || 'index.handler';
       const memorySize = Number(lambda.metadata?.memory_size || 128);
       const timeout = Number(lambda.metadata?.timeout || 30);
+
+      // Find IAM role for lambda via edges
+      let lambdaRoleRef = 'var.lambda_role_arn';
+      for (const edge of edges) {
+        if (edge.target === lambda.id && edge.relationshipType === 'accesses') {
+          const roleNode = nodeMap.get(edge.source);
+          if (roleNode?.resourceType === 'aws_iam_role') {
+            lambdaRoleRef = `aws_iam_role.${safeResourceName(roleNode.label, 'aws_iam_role', roleNode.id)}.arn`;
+            break;
+          }
+        }
+      }
 
       files.push({
         filename: `lambda/${name}.tf`,
@@ -440,7 +831,7 @@ provider "aws" {
             tags: { Name: lambda.label || name },
           },
           [
-            `  role = aws_iam_role.lambda_exec_role.arn  // TODO: create IAM role`,
+            `  role = ${lambdaRoleRef}`,
             `  filename = "lambda.zip"  // TODO: point to your deployment package`,
             `  source_code_hash = filebase64sha256("lambda.zip")`,
           ],
@@ -448,12 +839,52 @@ provider "aws" {
       });
     }
 
+    if (lambdas.length > 0) {
+      variablesContent += hclVariable('lambda_role_arn', 'string');
+    }
+
     // 11. Application Load Balancer
     const lbs = byType.get('aws_lb') ?? [];
     for (const lb of lbs) {
-      const name = safeResourceName(lb.label, 'aws_lb', lb.id);
+      const name = uniqueResourceName(
+        usedNames,
+        lb.label,
+        'aws_lb',
+        lb.id,
+      );
       const lbType = (lb.metadata?.load_balancer_type as string) || 'application';
       const internal = lb.metadata?.internal === true;
+
+      const blocks: string[] = [];
+      const lbSubnets: string[] = [];
+      for (const edge of edges) {
+        if (edge.target === lb.id && edge.relationshipType === 'contains') {
+          const subnetNode = nodeMap.get(edge.source);
+          if (subnetNode?.resourceType === 'aws_subnet' && subnetRefs.has(edge.source)) {
+            lbSubnets.push(`aws_subnet.${subnetRefs.get(edge.source)}.id`);
+          }
+        }
+      }
+      if (lbSubnets.length > 0) {
+        blocks.push(`  subnets = [${lbSubnets.join(', ')}]`);
+      } else if (subnets.length > 0) {
+        blocks.push(`  subnets = var.subnet_ids  // TODO: specify ALB subnets`);
+      }
+
+      const lbSgs: string[] = [];
+      for (const edge of edges) {
+        if (edge.target === lb.id && edge.relationshipType === 'accesses') {
+          const sgNode = nodeMap.get(edge.source);
+          if (sgNode?.resourceType === 'aws_security_group' && sgRefs.has(edge.source)) {
+            lbSgs.push(`aws_security_group.${sgRefs.get(edge.source)}.id`);
+          }
+        }
+      }
+      if (lbSgs.length > 0) {
+        blocks.push(`  security_groups = [${lbSgs.join(', ')}]`);
+      } else if (securityGroups.length > 0) {
+        blocks.push(`  security_groups = [aws_security_group.default.id]  // TODO: reference your security group`);
+      }
 
       files.push({
         filename: `alb/${name}.tf`,
@@ -461,16 +892,13 @@ provider "aws" {
           'aws_lb',
           name,
           {
-            name: name,
+            name,
             load_balancer_type: lbType,
             internal: internal,
             enable_deletion_protection: false,
             tags: { Name: lb.label || name },
           },
-          [
-            `  subnets = var.subnet_ids  // TODO: set to your subnet IDs`,
-            `  security_groups = [aws_security_group.default.id]  // TODO: reference your security group`,
-          ],
+          blocks,
         ),
       });
     }
@@ -478,7 +906,12 @@ provider "aws" {
     // 12. IAM Roles
     const iamRoles = byType.get('aws_iam_role') ?? [];
     for (const role of iamRoles) {
-      const name = safeResourceName(role.label, 'aws_iam_role', role.id);
+      const name = uniqueResourceName(
+        usedNames,
+        role.label,
+        'aws_iam_role',
+        role.id,
+      );
       const roleName = (role.metadata?.name as string) || name;
       const assumeRolePolicy = role.metadata?.assume_role_policy as string | undefined;
 
@@ -491,14 +924,18 @@ provider "aws" {
             name: roleName,
             assume_role_policy: assumeRolePolicy
               ? hclString(assumeRolePolicy)
-              : hclString(JSON.stringify({
-                  Version: '2012-10-17',
-                  Statement: [{
-                    Effect: 'Allow',
-                    Principal: { Service: 'ec2.amazonaws.com' },
-                    Action: 'sts:AssumeRole',
-                  }],
-                })),
+              : hclString(
+                  JSON.stringify({
+                    Version: '2012-10-17',
+                    Statement: [
+                      {
+                        Effect: 'Allow',
+                        Principal: { Service: 'ec2.amazonaws.com' },
+                        Action: 'sts:AssumeRole',
+                      },
+                    ],
+                  }),
+                ),
             tags: { Name: role.label || name },
           },
         ),
@@ -508,7 +945,12 @@ provider "aws" {
     // 13. KMS Keys
     const kmsKeys = byType.get('aws_kms_key') ?? [];
     for (const key of kmsKeys) {
-      const name = safeResourceName(key.label, 'aws_kms_key', key.id);
+      const name = uniqueResourceName(
+        usedNames,
+        key.label,
+        'aws_kms_key',
+        key.id,
+      );
       const description = (key.metadata?.description as string) || `KMS key for ${key.label || name}`;
 
       files.push({
@@ -517,7 +959,7 @@ provider "aws" {
           'aws_kms_key',
           name,
           {
-            description: description,
+            description,
             deletion_window_in_days: 30,
             tags: { Name: key.label || name },
           },
@@ -525,13 +967,37 @@ provider "aws" {
       });
     }
 
+    // Variables file
+    files.push({
+      filename: 'variables.tf',
+      content: variablesContent,
+    });
+
     // Outputs
     const outputLines: string[] = [];
     outputLines.push(hclOutput('architecture_name', hclString(architectureName)));
     outputLines.push(hclOutput('aws_region', 'var.aws_region'));
 
     if (vpcs.length > 0) {
-      outputLines.push(hclOutput('vpc_ids', `[\n${vpcs.map((v) => `    aws_vpc.${safeResourceName(v.label, 'aws_vpc', v.id)}.id`).join(',\n')}\n  ]`));
+      outputLines.push(
+        hclOutput(
+          'vpc_ids',
+          `[\n${vpcs
+            .map((v) => `    aws_vpc.${vpcRefs.get(v.id)}.id`)
+            .join(',\n')}\n  ]`,
+        ),
+      );
+    }
+
+    if (subnets.length > 0) {
+      outputLines.push(
+        hclOutput(
+          'subnet_ids',
+          `[\n${subnets
+            .map((s) => `    aws_subnet.${subnetRefs.get(s.id)}.id`)
+            .join(',\n')}\n  ]`,
+        ),
+      );
     }
 
     files.push({
@@ -539,16 +1005,49 @@ provider "aws" {
       content: outputLines.join('\n'),
     });
 
-    return files;
+    // README
+    files.push({
+      filename: 'README.md',
+      content: `# CloudForge Terraform Export
+
+Generated from architecture: "${architectureName}"
+Region: ${region}
+
+## Files
+
+- \`versions.tf\` — Terraform version and AWS provider requirements
+- \`provider.tf\` — AWS provider configuration
+- \`variables.tf\` — Input variables (region, AMI, DB credentials, etc.)
+- \`outputs.tf\` — Output values (VPC IDs, subnet IDs, etc.)
+- \`vpc/\`, \`subnet/\`, \`security-group/\`, \`ec2/\`, \`rds/\`, \`s3/\`, \`dynamodb/\`, \`lambda/\`, \`alb/\`, \`iam/\`, \`kms/\`, \`nat-gateway/\`, \`internet-gateway/\` — Resource modules
+
+## Usage
+
+\`\`\`bash
+terraform init
+terraform validate
+terraform plan
+terraform apply
+\`\`\`
+
+## Notes
+
+- Review \`variables.tf\` and set required values (AMI ID, DB credentials, etc.) before applying.
+- Resources with missing dependencies are flagged in the generation issues.
+- Do not commit plaintext secrets to version control.
+`,
+    });
+
+    return { files, issues };
   }
 
   /**
-   * Generate HCL and save to database as a text blob (optional persistence).
+   * Generate HCL and return files + issues.
    */
   public static async generateAndSave(
     architectureId: string,
     userId: string,
-  ): Promise<{ files: TerraformFile[]; hcl: string }> {
+  ): Promise<{ files: TerraformFile[]; hcl: string; issues: DependencyIssue[] }> {
     const arch = await prisma.architecture.findUnique({
       where: { id: architectureId },
     });
@@ -577,9 +1076,9 @@ provider "aws" {
       metadata: e.data?.metadata || {},
     }));
 
-    const files = this.generate(arch.name, arch.region, nodes, edges);
+    const { files, issues } = this.generate(arch.name, arch.region, nodes, edges);
     const hcl = files.map((f) => `// === ${f.filename} ===\n${f.content}`).join('\n');
 
-    return { files, hcl };
+    return { files, hcl, issues };
   }
 }
