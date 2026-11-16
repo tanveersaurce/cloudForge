@@ -1,7 +1,11 @@
 import type { Architecture, Prisma } from '@prisma/client';
 import { prisma } from '../../config/database.js';
 import { ApiError } from '../../utils/ApiError.js';
-import { findInvalidEdgeReferences } from '../architecture-edges/edgeValidation.js';
+import {
+  findIncompatibleEdges,
+  findInvalidEdgeReferences,
+} from '../architecture-edges/edgeValidation.js';
+import { ValidationService } from '../validation/validation.service.js';
 import type {
   ArchitectureDetailDto,
   ArchitectureEdgeDto,
@@ -142,6 +146,8 @@ export async function updateArchitectureMetadata(
     },
   });
 
+  ValidationService.invalidateCache(id);
+
   return toDetailDto(updated);
 }
 
@@ -159,6 +165,15 @@ export async function saveArchitectureCanvas(
     );
   }
 
+  const incompatibleEdges = findIncompatibleEdges(input.edges, input.nodes);
+  if (incompatibleEdges.length > 0) {
+    const first = incompatibleEdges[0];
+    throw ApiError.badRequest(
+      `Edge "${first.edgeId}" is incompatible: ${first.reason}`,
+      incompatibleEdges,
+    );
+  }
+
   const updated = await prisma.$transaction(async (tx) => {
     const existing = await tx.architecture.findUnique({ where: { id } });
     assertArchitectureOwnership(existing, userId);
@@ -173,6 +188,8 @@ export async function saveArchitectureCanvas(
       },
     });
   });
+
+  ValidationService.invalidateCache(id);
 
   return toDetailDto(updated);
 }
@@ -209,5 +226,6 @@ export async function deleteArchitecture(
   assertArchitectureOwnership(existing, userId);
 
   await prisma.architecture.delete({ where: { id } });
+  ValidationService.invalidateCache(id);
   return { deleted: true };
 }

@@ -198,6 +198,7 @@ describe('Client Validation Engine', () => {
             publicly_accessible: false,
             multi_az: true,
             storage_encrypted: true,
+            backup_retention_period: 7,
           },
         },
       },
@@ -212,6 +213,140 @@ describe('Client Validation Engine', () => {
     expect(result.summary.status).toBe('valid');
     expect(result.summary.criticalCount).toBe(0);
     expect(result.summary.highCount).toBe(0);
+  });
+
+  it('A3-16 & A3-07: distinguishes missing vs invalid RDS configurations and validates edge relationship direction in client engine', () => {
+    // 1. Missing multi_az and missing backup_retention produce 'unknown' status
+    const unconfiguredDbNode: ArchitectureFlowNode = {
+      id: 'db-unconfig',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: {
+        serviceId: 'svc-rds',
+        serviceSlug: 'amazon-rds',
+        serviceName: 'Amazon RDS',
+        categorySlug: 'database',
+        categoryName: 'Database',
+        iconKey: 'rds',
+        resourceName: 'RDS Database',
+        resourceType: 'aws_db_instance',
+        label: 'Unconfigured RDS',
+        description: '',
+        metadata: {},
+      },
+    };
+
+    const resUnconfig = runClientValidation('arch-unconfig', [unconfiguredDbNode], []);
+    const rel001Finding = resUnconfig.findings.find((f) => f.ruleId === 'REL-001');
+    const rel002Finding = resUnconfig.findings.find((f) => f.ruleId === 'REL-002');
+    expect(rel001Finding?.status).toBe('unknown');
+    expect(rel002Finding?.status).toBe('unknown');
+
+    // 2. Disabled backups (retention = 0) and Single-AZ (multi_az = false) produce 'invalid'
+    const disabledDbNode: ArchitectureFlowNode = {
+      id: 'db-disabled',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: {
+        serviceId: 'svc-rds',
+        serviceSlug: 'amazon-rds',
+        serviceName: 'Amazon RDS',
+        categorySlug: 'database',
+        categoryName: 'Database',
+        iconKey: 'rds',
+        resourceName: 'RDS Database',
+        resourceType: 'aws_db_instance',
+        label: 'Disabled RDS',
+        description: '',
+        metadata: {
+          multi_az: false,
+          backup_retention_period: 0,
+        },
+      },
+    };
+
+    const resDisabled = runClientValidation('arch-disabled', [disabledDbNode], []);
+    const rel001Disabled = resDisabled.findings.find((f) => f.ruleId === 'REL-001');
+    const rel002Disabled = resDisabled.findings.find((f) => f.ruleId === 'REL-002');
+    expect(rel001Disabled?.status).toBe('invalid');
+    expect(rel002Disabled?.status).toBe('invalid');
+
+    // 3. STRUCT-001 rejects invalid relationshipType on Subnet-VPC connection
+    const vpcNode: ArchitectureFlowNode = {
+      id: 'vpc-node',
+      type: 'awsResource',
+      position: { x: 0, y: 0 },
+      data: {
+        serviceId: 'svc-vpc',
+        serviceSlug: 'amazon-vpc',
+        serviceName: 'Amazon VPC',
+        categorySlug: 'networking-content-delivery',
+        categoryName: 'Networking',
+        iconKey: 'vpc',
+        resourceName: 'VPC',
+        resourceType: 'aws_vpc',
+        label: 'VPC',
+        description: '',
+        metadata: { cidr_block: '10.0.0.0/16' },
+      },
+    };
+    const subnetNode: ArchitectureFlowNode = {
+      id: 'sub-node',
+      type: 'awsResource',
+      position: { x: 10, y: 10 },
+      data: {
+        serviceId: 'svc-vpc',
+        serviceSlug: 'amazon-vpc',
+        serviceName: 'Amazon VPC',
+        categorySlug: 'networking-content-delivery',
+        categoryName: 'Networking',
+        iconKey: 'vpc',
+        resourceName: 'Subnet',
+        resourceType: 'aws_subnet',
+        label: 'Subnet',
+        description: '',
+        metadata: { cidr_block: '10.0.1.0/24' },
+      },
+    };
+
+    const badRelEdge: ArchitectureFlowEdge = {
+      id: 'e-bad-rel',
+      source: 'vpc-node',
+      target: 'sub-node',
+      data: { relationshipType: 'sends-traffic-to' },
+    };
+
+    const resBadRel = runClientValidation('arch-bad-rel', [vpcNode, subnetNode], [badRelEdge]);
+    expect(resBadRel.findings.some((f) => f.ruleId === 'STRUCT-001')).toBe(true);
+
+    // 4. NET-005 detects NAT Gateway in subnet without route to IGW
+    const natNode: ArchitectureFlowNode = {
+      id: 'nat-node',
+      type: 'awsResource',
+      position: { x: 20, y: 20 },
+      data: {
+        serviceId: 'svc-vpc',
+        serviceSlug: 'amazon-vpc',
+        serviceName: 'Amazon VPC',
+        categorySlug: 'networking-content-delivery',
+        categoryName: 'Networking',
+        iconKey: 'nat',
+        resourceName: 'NAT Gateway',
+        resourceType: 'aws_nat_gateway',
+        label: 'NAT Gateway',
+        description: '',
+        metadata: {},
+      },
+    };
+    const natEdge: ArchitectureFlowEdge = {
+      id: 'e-nat',
+      source: 'sub-node',
+      target: 'nat-node',
+      data: { relationshipType: 'contains' },
+    };
+
+    const resNat = runClientValidation('arch-nat', [vpcNode, subnetNode, natNode], [badRelEdge, natEdge]);
+    expect(resNat.findings.some((f) => f.ruleId === 'NET-005')).toBe(true);
   });
 });
 

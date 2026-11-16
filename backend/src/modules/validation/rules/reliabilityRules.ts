@@ -30,6 +30,20 @@ export const multiAzDatabaseRule: ValidationRule = {
           remediation: 'Enable Multi-AZ deployment for automatic failover and high availability.',
           documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html',
         });
+      } else if (isMultiAz === undefined || isMultiAz === null) {
+        findings.push({
+          id: `REL-001-unknown-${rds.id}`,
+          ruleId: 'REL-001',
+          ruleTitle: 'RDS High Availability Multi-AZ Configuration',
+          category: 'reliability',
+          severity: 'medium',
+          status: 'unknown',
+          affectedNodeIds: [rds.id],
+          message: `RDS Instance "${rds.data.label || rds.id}" does not specify a Multi-AZ deployment configuration.`,
+          description: 'Without Multi-AZ configured, high availability standby failover across availability zones cannot be verified.',
+          remediation: 'Explicitly configure "multi_az = true" in resource settings for high availability.',
+          documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html',
+        });
       }
     }
 
@@ -53,7 +67,43 @@ export const automatedBackupRetentionRule: ValidationRule = {
 
     for (const rds of rdsInstances) {
       const retention = rds.data.metadata?.backup_retention_period;
-      if (retention === 0 || retention === '0') {
+
+      if (retention === undefined || retention === null || retention === '') {
+        findings.push({
+          id: `REL-002-unknown-${rds.id}`,
+          ruleId: 'REL-002',
+          ruleTitle: 'RDS Automated Backups Enabled',
+          category: 'reliability',
+          severity: 'medium',
+          status: 'unknown',
+          affectedNodeIds: [rds.id],
+          message: `RDS Instance "${rds.data.label || rds.id}" has no backup retention period specified.`,
+          description: 'Automated backup retention is not configured, risking data loss in disaster recovery scenarios.',
+          remediation: 'Configure a backup retention period of between 7 and 35 days in resource properties.',
+          documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
+        });
+        continue;
+      }
+
+      const numRetention = Number(retention);
+      if (isNaN(numRetention) || numRetention < 0) {
+        findings.push({
+          id: `REL-002-invalid-${rds.id}`,
+          ruleId: 'REL-002',
+          ruleTitle: 'RDS Automated Backups Enabled',
+          category: 'reliability',
+          severity: 'high',
+          status: 'invalid',
+          affectedNodeIds: [rds.id],
+          message: `RDS Instance "${rds.data.label || rds.id}" has invalid backup retention configuration "${retention}".`,
+          description: 'Backup retention period must be a non-negative integer representing snapshot retention in days.',
+          remediation: 'Set backup_retention_period to an integer between 7 and 35 days.',
+          documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
+        });
+        continue;
+      }
+
+      if (numRetention === 0) {
         findings.push({
           id: `REL-002-${rds.id}`,
           ruleId: 'REL-002',

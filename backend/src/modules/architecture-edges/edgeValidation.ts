@@ -39,8 +39,20 @@ export const relationshipMetadataSchema = z
   })
   .passthrough();
 
+export const relationshipTypeSchema = z
+  .string()
+  .trim()
+  .transform((val) => (val === 'traffic-flow' ? 'sends-traffic-to' : val))
+  .pipe(
+    z.enum(RELATIONSHIP_TYPES, {
+      errorMap: () => ({
+        message: `relationshipType must be one of: ${RELATIONSHIP_TYPES.join(', ')}`,
+      }),
+    }),
+  );
+
 export const architectureEdgeDataSchema = z.object({
-  relationshipType: z.string().trim().min(1, 'relationshipType is required'),
+  relationshipType: relationshipTypeSchema,
   direction: z.enum(RELATIONSHIP_DIRECTIONS).optional(),
   label: z.string().trim().max(120).optional(),
   metadata: relationshipMetadataSchema.optional(),
@@ -98,4 +110,78 @@ export function findInvalidEdgeReferences(
   }
 
   return invalid;
+}
+
+const CONTAINER_RESOURCE_TYPES = new Set([
+  'aws_vpc',
+  'vpc',
+  'amazon-vpc',
+  'aws_subnet',
+  'subnet',
+  'aws_cloud',
+  'aws-cloud',
+  'cloud',
+  'aws_region',
+  'region',
+  'aws_availability_zone',
+  'aws_az',
+  'availability-zone',
+  'az',
+  'aws_ecs_cluster',
+  'ecs_cluster',
+  'ecs-cluster',
+  'cluster',
+  'aws_db_subnet_group',
+  'db-subnet-group',
+]);
+
+/**
+ * Finds edges whose relationshipType violates structural compatibility between connected nodes.
+ */
+export function findIncompatibleEdges(
+  edges: ArchitectureEdgeDto[],
+  nodes: ArchitectureNodeDto[],
+): Array<{ edgeId: string; reason: string }> {
+  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+  const incompatible: Array<{ edgeId: string; reason: string }> = [];
+
+  for (const edge of edges) {
+    const sourceNode = nodeMap.get(edge.source);
+    const targetNode = nodeMap.get(edge.target);
+    if (!sourceNode || !targetNode) continue;
+
+    const relType = edge.data?.relationshipType;
+    if (!relType) continue;
+
+    const sourceType = (sourceNode.data?.resourceType || sourceNode.data?.serviceSlug || '')
+      .toLowerCase()
+      .trim();
+    const targetType = (targetNode.data?.resourceType || targetNode.data?.serviceSlug || '')
+      .toLowerCase()
+      .trim();
+
+    // 1. Non-container resource attempting a "contains" relationship
+    if (relType === 'contains' && !CONTAINER_RESOURCE_TYPES.has(sourceType)) {
+      incompatible.push({
+        edgeId: edge.id,
+        reason: `Resource "${sourceNode.data?.resourceName || sourceType}" cannot contain "${targetNode.data?.resourceName || targetType}" because it is not a container boundary`,
+      });
+      continue;
+    }
+
+    // 2. Subnet cannot contain a VPC
+    if (
+      relType === 'contains' &&
+      (sourceType === 'aws_subnet' || sourceType === 'subnet') &&
+      (targetType === 'aws_vpc' || targetType === 'vpc')
+    ) {
+      incompatible.push({
+        edgeId: edge.id,
+        reason: 'A Subnet cannot contain a VPC; a VPC contains Subnets',
+      });
+      continue;
+    }
+  }
+
+  return incompatible;
 }

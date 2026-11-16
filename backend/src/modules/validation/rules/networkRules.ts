@@ -202,20 +202,48 @@ export const natGatewayPublicPlacementRule: ValidationRule = {
       const subnetNode = ctx.nodes.find((n) => n.id === subnetId);
       if (!subnetNode) continue;
 
-      // Check if this subnet is public by inspecting route table or direct connection to IGW
+      // Check if this subnet is public by inspecting route table or direct connection to IGW with proper relationship
       const hasRouteToIgw = ctx.edges.some((e) => {
         if (e.source !== subnetNode.id && e.target !== subnetNode.id) return false;
         const otherId = e.source === subnetNode.id ? e.target : e.source;
         const otherNode = ctx.nodes.find((n) => n.id === otherId);
         if (!otherNode) return false;
-        if (otherNode.data.resourceType === 'aws_internet_gateway') return true;
+
+        const relType = e.data?.relationshipType;
+        const dir = e.data?.direction;
+
+        // Direct subnet route/connection to IGW
+        if (otherNode.data.resourceType === 'aws_internet_gateway') {
+          if (!relType && dir !== 'target-to-source') return true;
+          if (relType === 'routes-to' || relType === 'attached-to') {
+            return dir !== 'target-to-source';
+          }
+          return false;
+        }
+
+        // Subnet associated with a Route Table
         if (otherNode.data.resourceType === 'aws_route_table') {
+          const isValidSubnetRtEdge =
+            !relType ||
+            relType === 'attached-to' ||
+            relType === 'routes-to' ||
+            relType === 'depends-on';
+          if (!isValidSubnetRtEdge) return false;
+
           // Check route table edges to IGW
           return ctx.edges.some((rte) => {
             if (rte.source !== otherNode.id && rte.target !== otherNode.id) return false;
             const targetId = rte.source === otherNode.id ? rte.target : rte.source;
             const targetNode = ctx.nodes.find((n) => n.id === targetId);
-            return targetNode?.data.resourceType === 'aws_internet_gateway';
+            if (targetNode?.data.resourceType !== 'aws_internet_gateway') return false;
+
+            const rtRelType = rte.data?.relationshipType;
+            const rtDir = rte.data?.direction;
+            if (!rtRelType && rtDir !== 'target-to-source') return true;
+            return (
+              (rtRelType === 'routes-to' || rtRelType === 'depends-on' || rtRelType === 'attached-to') &&
+              rtDir !== 'target-to-source'
+            );
           });
         }
         return false;

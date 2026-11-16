@@ -823,4 +823,216 @@ describe('Architecture CRUD, Canvas Persistence, Validation & Ownership APIs', (
       ]),
     );
   });
+
+  it('A3-14: rejects self-parenting, circular parent-child references, leaf parents, and invalid hierarchy', async () => {
+    const cookie = await registerAndGetCookie('Ananya Iyer', 'ananya@cloudforge.dev');
+
+    const createRes = await request(app)
+      .post('/api/architectures')
+      .set('Cookie', cookie)
+      .send({ name: 'A3-14 Hierarchy Cycle Tests' });
+    const archId = createRes.body.data.id as string;
+
+    // 1. Self-parenting rejection
+    const selfParentNode = {
+      ...makeSampleNode('node-self-parent', { label: 'Self Parent Node', resourceName: 'VPC' }),
+      parentId: 'node-self-parent',
+    };
+    const selfParentRes = await request(app)
+      .put(`/api/architectures/${archId}/canvas`)
+      .set('Cookie', cookie)
+      .send({
+        nodes: [selfParentNode],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      });
+    expect(selfParentRes.status).toBe(400);
+    expect(selfParentRes.body.error.details.nodes).toEqual(
+      expect.arrayContaining([expect.stringMatching(/self-parent/i)]),
+    );
+
+    // 2. Direct cycle (A -> B -> A)
+    const nodeA = {
+      ...makeSampleNode('node-cycle-a', { label: 'Node A', resourceName: 'VPC' }),
+      parentId: 'node-cycle-b',
+    };
+    const nodeB = {
+      ...makeSampleNode('node-cycle-b', { label: 'Node B', resourceName: 'VPC' }),
+      parentId: 'node-cycle-a',
+    };
+    const directCycleRes = await request(app)
+      .put(`/api/architectures/${archId}/canvas`)
+      .set('Cookie', cookie)
+      .send({
+        nodes: [nodeA, nodeB],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      });
+    expect(directCycleRes.status).toBe(400);
+    expect(directCycleRes.body.error.details.nodes).toEqual(
+      expect.arrayContaining([expect.stringMatching(/circular/i)]),
+    );
+
+    // 3. Indirect cycle of depth 3 (A -> B -> C -> A)
+    const node1 = {
+      ...makeSampleNode('node-c3-1', { label: 'Node 1', resourceName: 'VPC' }),
+      parentId: 'node-c3-3',
+    };
+    const node2 = {
+      ...makeSampleNode('node-c3-2', { label: 'Node 2', resourceName: 'VPC' }),
+      parentId: 'node-c3-1',
+    };
+    const node3 = {
+      ...makeSampleNode('node-c3-3', { label: 'Node 3', resourceName: 'VPC' }),
+      parentId: 'node-c3-2',
+    };
+    const indirectCycleRes = await request(app)
+      .put(`/api/architectures/${archId}/canvas`)
+      .set('Cookie', cookie)
+      .send({
+        nodes: [node1, node2, node3],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      });
+    expect(indirectCycleRes.status).toBe(400);
+    expect(indirectCycleRes.body.error.details.nodes).toEqual(
+      expect.arrayContaining([expect.stringMatching(/circular/i)]),
+    );
+
+    // 4. Leaf resource cannot act as a parent (e.g. EC2 instance as parent)
+    const ec2Parent = {
+      ...makeSampleNode('node-ec2-parent', { label: 'EC2 Leaf', resourceName: 'EC2 Instance' }),
+      data: {
+        ...makeSampleNode('node-ec2-parent').data,
+        resourceType: 'aws_instance',
+        serviceSlug: 'amazon-ec2',
+      },
+    };
+    const childUnderEc2 = {
+      ...makeSampleNode('node-child-under-ec2', { label: 'Subnet', resourceName: 'Subnet' }),
+      parentId: 'node-ec2-parent',
+    };
+    const leafParentRes = await request(app)
+      .put(`/api/architectures/${archId}/canvas`)
+      .set('Cookie', cookie)
+      .send({
+        nodes: [ec2Parent, childUnderEc2],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      });
+    expect(leafParentRes.status).toBe(400);
+    expect(leafParentRes.body.error.details.nodes).toEqual(
+      expect.arrayContaining([expect.stringMatching(/cannot act as a parent container/i)]),
+    );
+
+    // 5. Invalid parent-child combination: Subnet cannot contain a VPC
+    const subnetParent = {
+      ...makeSampleNode('node-sub-parent', { label: 'Subnet Parent', resourceName: 'Subnet' }),
+      data: {
+        ...makeSampleNode('node-sub-parent').data,
+        resourceType: 'aws_subnet',
+        resourceName: 'Subnet',
+      },
+    };
+    const vpcChild = {
+      ...makeSampleNode('node-vpc-child', { label: 'VPC Child', resourceName: 'VPC' }),
+      data: {
+        ...makeSampleNode('node-vpc-child').data,
+        resourceType: 'aws_vpc',
+        resourceName: 'VPC',
+      },
+      parentId: 'node-sub-parent',
+    };
+    const invalidCombRes = await request(app)
+      .put(`/api/architectures/${archId}/canvas`)
+      .set('Cookie', cookie)
+      .send({
+        nodes: [subnetParent, vpcChild],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      });
+    expect(invalidCombRes.status).toBe(400);
+    expect(invalidCombRes.body.error.details.nodes).toEqual(
+      expect.arrayContaining([expect.stringMatching(/cannot act as a parent container for VPC/i)]),
+    );
+  });
+
+  it('A3-15: validates edge relationshipType against schema and rejects incompatible endpoints', async () => {
+    const cookie = await registerAndGetCookie('Rohan Patel', 'rohan@cloudforge.dev');
+
+    const createRes = await request(app)
+      .post('/api/architectures')
+      .set('Cookie', cookie)
+      .send({ name: 'A3-15 Edge Schema Tests' });
+    const archId = createRes.body.data.id as string;
+
+    const vpcNode = makeSampleNode('node-vpc-edge-test', { label: 'VPC', resourceName: 'VPC' });
+    const ec2Node = {
+      ...makeSampleNode('node-ec2-edge-test', { label: 'EC2', resourceName: 'EC2' }),
+      data: {
+        ...makeSampleNode('node-ec2-edge-test').data,
+        resourceType: 'aws_instance',
+        serviceSlug: 'amazon-ec2',
+      },
+    };
+
+    // 1. Rejects unsupported relationshipType
+    const unsupportedRelRes = await request(app)
+      .put(`/api/architectures/${archId}/canvas`)
+      .set('Cookie', cookie)
+      .send({
+        nodes: [vpcNode, ec2Node],
+        edges: [
+          {
+            id: 'e-bad-rel-type',
+            source: 'node-vpc-edge-test',
+            target: 'node-ec2-edge-test',
+            data: { relationshipType: 'unsupported-bogus-type' },
+          },
+        ],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      });
+    expect(unsupportedRelRes.status).toBe(400);
+    expect(unsupportedRelRes.body.error.details.edges).toEqual(
+      expect.arrayContaining([expect.stringMatching(/relationshipType must be one of/i)]),
+    );
+
+    // 2. Rejects incompatible edge connection (leaf EC2 cannot contain VPC)
+    const incompatibleEdgeRes = await request(app)
+      .put(`/api/architectures/${archId}/canvas`)
+      .set('Cookie', cookie)
+      .send({
+        nodes: [ec2Node, vpcNode],
+        edges: [
+          {
+            id: 'e-incompatible',
+            source: 'node-ec2-edge-test',
+            target: 'node-vpc-edge-test',
+            data: { relationshipType: 'contains' },
+          },
+        ],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      });
+    expect(incompatibleEdgeRes.status).toBe(400);
+    expect(incompatibleEdgeRes.body.error.message).toMatch(/cannot contain|not a container boundary/i);
+
+    // 3. Accepts supported relationship types (e.g. sends-traffic-to, attached-to, contains)
+    const validEdgeRes = await request(app)
+      .put(`/api/architectures/${archId}/canvas`)
+      .set('Cookie', cookie)
+      .send({
+        nodes: [vpcNode, ec2Node],
+        edges: [
+          {
+            id: 'e-valid-1',
+            source: 'node-vpc-edge-test',
+            target: 'node-ec2-edge-test',
+            data: { relationshipType: 'contains', direction: 'source-to-target' },
+          },
+        ],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      });
+    expect(validEdgeRes.status).toBe(200);
+    expect(validEdgeRes.body.data.edges).toHaveLength(1);
+  });
 });

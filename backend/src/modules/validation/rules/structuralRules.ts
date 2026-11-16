@@ -15,14 +15,39 @@ export const subnetVpcContainmentRule: ValidationRule = {
     const subnets = ctx.nodes.filter((n) => n.data.resourceType === 'aws_subnet');
 
     for (const subnet of subnets) {
-      // Find incoming edges with type 'contains' or outgoing from VPC
-      const hasVpcParent = ctx.edges.some((edge) => {
-        if (edge.target !== subnet.id) return false;
-        const sourceNode = ctx.nodes.find((n) => n.id === edge.source);
-        return sourceNode?.data.resourceType === 'aws_vpc';
+      // Check parentId hierarchy first
+      const hasParentVpcId =
+        Boolean(subnet.parentId) &&
+        ctx.nodes.some((n) => n.id === subnet.parentId && n.data.resourceType === 'aws_vpc');
+
+      // Check containment/attachment edge with valid relationship type and direction
+      const hasVpcEdge = ctx.edges.some((edge) => {
+        const relType = edge.data?.relationshipType;
+        const dir = edge.data?.direction;
+
+        if (edge.target === subnet.id) {
+          const sourceNode = ctx.nodes.find((n) => n.id === edge.source);
+          if (sourceNode?.data.resourceType !== 'aws_vpc') return false;
+          // VPC -> Subnet: valid if 'contains' (and not target-to-source), or default untyped edge
+          if (!relType && dir !== 'target-to-source') return true;
+          if (relType === 'contains' && dir !== 'target-to-source') return true;
+          if ((relType === 'attached-to' || relType === 'depends-on') && dir === 'target-to-source') return true;
+          return false;
+        }
+
+        if (edge.source === subnet.id) {
+          const targetNode = ctx.nodes.find((n) => n.id === edge.target);
+          if (targetNode?.data.resourceType !== 'aws_vpc') return false;
+          // Subnet -> VPC: valid if 'attached-to' or 'depends-on' (and not target-to-source)
+          if ((relType === 'attached-to' || relType === 'depends-on') && dir !== 'target-to-source') return true;
+          if (relType === 'contains' && dir === 'target-to-source') return true;
+          return false;
+        }
+
+        return false;
       });
 
-      if (!hasVpcParent) {
+      if (!hasParentVpcId && !hasVpcEdge) {
         findings.push({
           id: `STRUCT-001-${subnet.id}`,
           ruleId: 'STRUCT-001',
@@ -59,14 +84,39 @@ export const computeSubnetPlacementRule: ValidationRule = {
     const candidates = ctx.nodes.filter((n) => targetTypes.includes(n.data.resourceType));
 
     for (const candidate of candidates) {
-      const hasSubnetParent = ctx.edges.some((edge) => {
-        if (edge.target !== candidate.id && edge.source !== candidate.id) return false;
-        const otherId = edge.target === candidate.id ? edge.source : edge.target;
-        const otherNode = ctx.nodes.find((n) => n.id === otherId);
-        return otherNode?.data.resourceType === 'aws_subnet';
+      // Check parentId hierarchy first
+      const hasParentSubnetId =
+        Boolean(candidate.parentId) &&
+        ctx.nodes.some((n) => n.id === candidate.parentId && n.data.resourceType === 'aws_subnet');
+
+      // Check containment/attachment edge with valid relationship type and direction
+      const hasSubnetEdge = ctx.edges.some((edge) => {
+        const relType = edge.data?.relationshipType;
+        const dir = edge.data?.direction;
+
+        if (edge.target === candidate.id) {
+          const sourceNode = ctx.nodes.find((n) => n.id === edge.source);
+          if (sourceNode?.data.resourceType !== 'aws_subnet') return false;
+          // Subnet -> Resource: valid if 'contains' (and not target-to-source) or default untyped edge
+          if (!relType && dir !== 'target-to-source') return true;
+          if (relType === 'contains' && dir !== 'target-to-source') return true;
+          if ((relType === 'attached-to' || relType === 'depends-on') && dir === 'target-to-source') return true;
+          return false;
+        }
+
+        if (edge.source === candidate.id) {
+          const targetNode = ctx.nodes.find((n) => n.id === edge.target);
+          if (targetNode?.data.resourceType !== 'aws_subnet') return false;
+          // Resource -> Subnet: valid if 'attached-to' or 'depends-on' (and not target-to-source)
+          if ((relType === 'attached-to' || relType === 'depends-on') && dir !== 'target-to-source') return true;
+          if (relType === 'contains' && dir === 'target-to-source') return true;
+          return false;
+        }
+
+        return false;
       });
 
-      if (!hasSubnetParent) {
+      if (!hasParentSubnetId && !hasSubnetEdge) {
         findings.push({
           id: `STRUCT-002-${candidate.id}`,
           ruleId: 'STRUCT-002',
@@ -102,11 +152,32 @@ export const internetGatewayAttachmentRule: ValidationRule = {
     const igws = ctx.nodes.filter((n) => n.data.resourceType === 'aws_internet_gateway');
 
     for (const igw of igws) {
+      // Check attachment edge with valid relationship type and direction
       const hasVpcAttachment = ctx.edges.some((edge) => {
-        if (edge.target !== igw.id && edge.source !== igw.id) return false;
-        const otherId = edge.target === igw.id ? edge.source : edge.target;
-        const otherNode = ctx.nodes.find((n) => n.id === otherId);
-        return otherNode?.data.resourceType === 'aws_vpc';
+        const relType = edge.data?.relationshipType;
+        const dir = edge.data?.direction;
+
+        if (edge.source === igw.id) {
+          const targetNode = ctx.nodes.find((n) => n.id === edge.target);
+          if (targetNode?.data.resourceType !== 'aws_vpc') return false;
+          // IGW -> VPC: valid if 'attached-to' or 'depends-on' (and not target-to-source)
+          if (!relType && dir !== 'target-to-source') return true;
+          if ((relType === 'attached-to' || relType === 'depends-on') && dir !== 'target-to-source') return true;
+          if (relType === 'contains' && dir === 'target-to-source') return true;
+          return false;
+        }
+
+        if (edge.target === igw.id) {
+          const sourceNode = ctx.nodes.find((n) => n.id === edge.source);
+          if (sourceNode?.data.resourceType !== 'aws_vpc') return false;
+          // VPC -> IGW: valid if 'attached-to' or 'contains' (and not target-to-source)
+          if (!relType && dir !== 'target-to-source') return true;
+          if ((relType === 'attached-to' || relType === 'contains') && dir !== 'target-to-source') return true;
+          if ((relType === 'attached-to' || relType === 'depends-on') && dir === 'target-to-source') return true;
+          return false;
+        }
+
+        return false;
       });
 
       if (!hasVpcAttachment) {

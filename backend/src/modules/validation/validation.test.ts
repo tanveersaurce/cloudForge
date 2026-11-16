@@ -492,5 +492,381 @@ describe('AWS Architecture Validation Engine (Phase 07)', () => {
       const fetched = await ValidationService.getValidationResults('arch-100', 'user-alice');
       expect(fetched.summary.totalFindings).toBe(result.summary.totalFindings);
     });
+
+    it('A3-01: invalidates validation cache when architecture is updated or explicitly invalidated', async () => {
+      const initialUpdatedAt = new Date('2026-01-01T10:00:00Z');
+      const arch = {
+        id: 'arch-cache-test',
+        userId: 'user-alice',
+        name: 'Cache Test Arch',
+        description: null,
+        region: 'us-east-1',
+        status: 'draft',
+        resourceCount: 1,
+        nodes: [
+          {
+            id: 'vpc-1',
+            type: 'awsResource',
+            data: { resourceType: 'aws_vpc', metadata: { cidr_block: '10.0.0.0/16' } },
+          },
+        ],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+        createdAt: initialUpdatedAt,
+        updatedAt: initialUpdatedAt,
+      };
+      mockArchitectures.push(arch);
+
+      // 1. Initial validation caches result
+      const res1 = await ValidationService.validateArchitecture('arch-cache-test', 'user-alice');
+      expect(ValidationService.hasFreshCache('arch-cache-test', arch.updatedAt)).toBe(true);
+
+      // 2. Retrieval returns cached result when updatedAt has not changed
+      const resCached = await ValidationService.getValidationResults('arch-cache-test', 'user-alice');
+      expect(resCached).toBe(res1);
+
+      // 3. Architecture updatedAt is advanced (simulating an edit)
+      arch.updatedAt = new Date('2026-01-01T10:05:00Z');
+      expect(ValidationService.hasFreshCache('arch-cache-test', arch.updatedAt)).toBe(false);
+
+      // 4. getValidationResults detects stale cache and re-validates fresh state
+      const resFresh = await ValidationService.getValidationResults('arch-cache-test', 'user-alice');
+      expect(resFresh).not.toBe(res1);
+      expect(ValidationService.hasFreshCache('arch-cache-test', arch.updatedAt)).toBe(true);
+
+      // 5. Explicit invalidation removes entry
+      ValidationService.invalidateCache('arch-cache-test');
+      expect(ValidationService.hasFreshCache('arch-cache-test', arch.updatedAt)).toBe(false);
+
+      // 6. Global clear removes all entries
+      await ValidationService.validateArchitecture('arch-cache-test', 'user-alice');
+      expect(ValidationService.hasFreshCache('arch-cache-test', arch.updatedAt)).toBe(true);
+      ValidationService.clearCache();
+      expect(ValidationService.hasFreshCache('arch-cache-test', arch.updatedAt)).toBe(false);
+    });
+  });
+
+  describe('A3-07: Relationship Type and Direction Validation', () => {
+    it('STRUCT-001: accepts valid VPC -> Subnet contains edge, rejects invalid relationship types and reversed directions', () => {
+      const vpcNode = {
+        id: 'vpc-1',
+        type: 'awsResource',
+        data: { resourceType: 'aws_vpc', label: 'VPC' },
+      };
+      const subnetNode = {
+        id: 'sub-1',
+        type: 'awsResource',
+        data: { resourceType: 'aws_subnet', label: 'Subnet' },
+      };
+
+      // 1. Valid contains relationship from VPC to Subnet
+      const validCtx = {
+        architectureId: 'arch-1',
+        nodes: [vpcNode, subnetNode],
+        edges: [
+          {
+            id: 'e-1',
+            source: 'vpc-1',
+            target: 'sub-1',
+            data: { relationshipType: 'contains' as const, direction: 'source-to-target' as const },
+          },
+        ],
+      };
+      expect(subnetVpcContainmentRule.evaluate(validCtx)).toHaveLength(0);
+
+      // 2. Invalid relationship type (sends-traffic-to does not establish VPC containment)
+      const invalidRelCtx = {
+        architectureId: 'arch-1',
+        nodes: [vpcNode, subnetNode],
+        edges: [
+          {
+            id: 'e-bad-rel',
+            source: 'vpc-1',
+            target: 'sub-1',
+            data: { relationshipType: 'sends-traffic-to' as const, direction: 'source-to-target' as const },
+          },
+        ],
+      };
+      const invalidRelFindings = subnetVpcContainmentRule.evaluate(invalidRelCtx);
+      expect(invalidRelFindings).toHaveLength(1);
+      expect(invalidRelFindings[0].ruleId).toBe('STRUCT-001');
+
+      // 3. Reversed direction (target-to-source implies Subnet contains VPC)
+      const reversedDirCtx = {
+        architectureId: 'arch-1',
+        nodes: [vpcNode, subnetNode],
+        edges: [
+          {
+            id: 'e-rev',
+            source: 'vpc-1',
+            target: 'sub-1',
+            data: { relationshipType: 'contains' as const, direction: 'target-to-source' as const },
+          },
+        ],
+      };
+      const revFindings = subnetVpcContainmentRule.evaluate(reversedDirCtx);
+      expect(revFindings).toHaveLength(1);
+      expect(revFindings[0].ruleId).toBe('STRUCT-001');
+
+      // 4. Valid Subnet -> VPC with attached-to
+      const validAttachedCtx = {
+        architectureId: 'arch-1',
+        nodes: [vpcNode, subnetNode],
+        edges: [
+          {
+            id: 'e-attached',
+            source: 'sub-1',
+            target: 'vpc-1',
+            data: { relationshipType: 'attached-to' as const, direction: 'source-to-target' as const },
+          },
+        ],
+      };
+      expect(subnetVpcContainmentRule.evaluate(validAttachedCtx)).toHaveLength(0);
+    });
+
+    it('STRUCT-002: verifies compute placement checks relationshipType and rejects non-containment edges', () => {
+      const subnetNode = {
+        id: 'sub-1',
+        type: 'awsResource',
+        data: { resourceType: 'aws_subnet', label: 'Subnet' },
+      };
+      const ec2Node = {
+        id: 'ec2-1',
+        type: 'awsResource',
+        data: { resourceType: 'aws_instance', label: 'Web Server' },
+      };
+
+      // Valid Subnet contains EC2
+      const validCtx = {
+        architectureId: 'arch-1',
+        nodes: [subnetNode, ec2Node],
+        edges: [
+          {
+            id: 'e-1',
+            source: 'sub-1',
+            target: 'ec2-1',
+            data: { relationshipType: 'contains' as const },
+          },
+        ],
+      };
+      expect(computeSubnetPlacementRule.evaluate(validCtx)).toHaveLength(0);
+
+      // Invalid: sends-traffic-to does not place compute in subnet
+      const invalidCtx = {
+        architectureId: 'arch-1',
+        nodes: [subnetNode, ec2Node],
+        edges: [
+          {
+            id: 'e-traffic',
+            source: 'sub-1',
+            target: 'ec2-1',
+            data: { relationshipType: 'sends-traffic-to' as const },
+          },
+        ],
+      };
+      expect(computeSubnetPlacementRule.evaluate(invalidCtx)).toHaveLength(1);
+    });
+
+    it('STRUCT-003: rejects invalid relationship types between IGW and VPC', () => {
+      const vpcNode = {
+        id: 'vpc-1',
+        type: 'awsResource',
+        data: { resourceType: 'aws_vpc', label: 'VPC' },
+      };
+      const igwNode = {
+        id: 'igw-1',
+        type: 'awsResource',
+        data: { resourceType: 'aws_internet_gateway', label: 'IGW' },
+      };
+
+      // Valid: attached-to
+      const validCtx = {
+        architectureId: 'arch-1',
+        nodes: [vpcNode, igwNode],
+        edges: [
+          {
+            id: 'e-1',
+            source: 'igw-1',
+            target: 'vpc-1',
+            data: { relationshipType: 'attached-to' as const },
+          },
+        ],
+      };
+      expect(internetGatewayAttachmentRule.evaluate(validCtx)).toHaveLength(0);
+
+      // Invalid: routes-to from IGW to VPC is not an attachment relationship
+      const invalidCtx = {
+        architectureId: 'arch-1',
+        nodes: [vpcNode, igwNode],
+        edges: [
+          {
+            id: 'e-bad',
+            source: 'igw-1',
+            target: 'vpc-1',
+            data: { relationshipType: 'routes-to' as const },
+          },
+        ],
+      };
+      expect(internetGatewayAttachmentRule.evaluate(invalidCtx)).toHaveLength(1);
+    });
+
+    it('NET-005: verifies route path from NAT Gateway subnet to Internet Gateway', () => {
+      const igwNode = {
+        id: 'igw-1',
+        type: 'awsResource',
+        data: { resourceType: 'aws_internet_gateway', label: 'IGW' },
+      };
+      const pubSubnet = {
+        id: 'sub-pub',
+        type: 'awsResource',
+        data: { resourceType: 'aws_subnet', label: 'Public Subnet' },
+      };
+      const natNode = {
+        id: 'nat-1',
+        type: 'awsResource',
+        data: { resourceType: 'aws_nat_gateway', label: 'NAT GW' },
+      };
+
+      // Valid: NAT in Subnet, Subnet routes to IGW
+      const validCtx = {
+        architectureId: 'arch-1',
+        nodes: [igwNode, pubSubnet, natNode],
+        edges: [
+          { id: 'e-nat', source: 'sub-pub', target: 'nat-1', data: { relationshipType: 'contains' as const } },
+          { id: 'e-route', source: 'sub-pub', target: 'igw-1', data: { relationshipType: 'routes-to' as const } },
+        ],
+      };
+      expect(natGatewayPublicPlacementRule.evaluate(validCtx)).toHaveLength(0);
+
+      // Invalid: Subnet has unrelated relationship to IGW (e.g. sends-traffic-to instead of routes-to)
+      const invalidCtx = {
+        architectureId: 'arch-1',
+        nodes: [igwNode, pubSubnet, natNode],
+        edges: [
+          { id: 'e-nat', source: 'sub-pub', target: 'nat-1', data: { relationshipType: 'contains' as const } },
+          { id: 'e-bad-route', source: 'sub-pub', target: 'igw-1', data: { relationshipType: 'sends-traffic-to' as const } },
+        ],
+      };
+      expect(natGatewayPublicPlacementRule.evaluate(invalidCtx)).toHaveLength(1);
+    });
+  });
+
+  describe('A3-16: Missing RDS Configuration Validation', () => {
+    it('REL-001: produces unknown finding for missing Multi-AZ and invalid for explicit false', () => {
+      // 1. Missing multi_az (undefined) -> status: 'unknown', severity: 'medium'
+      const unspecCtx = {
+        architectureId: 'arch-1',
+        nodes: [
+          {
+            id: 'rds-unspec',
+            type: 'awsResource',
+            data: { resourceType: 'aws_db_instance', label: 'Unspecified RDS', metadata: {} },
+          },
+        ],
+        edges: [],
+      };
+      const unspecFindings = multiAzDatabaseRule.evaluate(unspecCtx);
+      expect(unspecFindings).toHaveLength(1);
+      expect(unspecFindings[0].ruleId).toBe('REL-001');
+      expect(unspecFindings[0].status).toBe('unknown');
+      expect(unspecFindings[0].severity).toBe('medium');
+
+      // 2. Explicitly false -> status: 'invalid', severity: 'medium'
+      const singleAzCtx = {
+        architectureId: 'arch-1',
+        nodes: [
+          {
+            id: 'rds-single',
+            type: 'awsResource',
+            data: { resourceType: 'aws_db_instance', label: 'Single-AZ RDS', metadata: { multi_az: false } },
+          },
+        ],
+        edges: [],
+      };
+      const singleFindings = multiAzDatabaseRule.evaluate(singleAzCtx);
+      expect(singleFindings).toHaveLength(1);
+      expect(singleFindings[0].status).toBe('invalid');
+
+      // 3. Explicitly true -> compliant (no findings)
+      const multiAzCtx = {
+        architectureId: 'arch-1',
+        nodes: [
+          {
+            id: 'rds-multi',
+            type: 'awsResource',
+            data: { resourceType: 'aws_db_instance', label: 'Multi-AZ RDS', metadata: { multi_az: true } },
+          },
+        ],
+        edges: [],
+      };
+      expect(multiAzDatabaseRule.evaluate(multiAzCtx)).toHaveLength(0);
+    });
+
+    it('REL-002: produces unknown for missing retention, invalid for 0 or negative, and compliant for >= 1', () => {
+      // 1. Missing retention (undefined) -> status: 'unknown'
+      const unspecCtx = {
+        architectureId: 'arch-1',
+        nodes: [
+          {
+            id: 'rds-unspec-bkp',
+            type: 'awsResource',
+            data: { resourceType: 'aws_db_instance', label: 'Unspecified Backup RDS', metadata: {} },
+          },
+        ],
+        edges: [],
+      };
+      const unspecFindings = automatedBackupRetentionRule.evaluate(unspecCtx);
+      expect(unspecFindings).toHaveLength(1);
+      expect(unspecFindings[0].ruleId).toBe('REL-002');
+      expect(unspecFindings[0].status).toBe('unknown');
+      expect(unspecFindings[0].severity).toBe('medium');
+
+      // 2. Explicit 0 -> status: 'invalid', severity: 'high'
+      const zeroCtx = {
+        architectureId: 'arch-1',
+        nodes: [
+          {
+            id: 'rds-zero-bkp',
+            type: 'awsResource',
+            data: { resourceType: 'aws_db_instance', label: 'Disabled Backup RDS', metadata: { backup_retention_period: 0 } },
+          },
+        ],
+        edges: [],
+      };
+      const zeroFindings = automatedBackupRetentionRule.evaluate(zeroCtx);
+      expect(zeroFindings).toHaveLength(1);
+      expect(zeroFindings[0].status).toBe('invalid');
+      expect(zeroFindings[0].severity).toBe('high');
+
+      // 3. Invalid negative retention -> status: 'invalid'
+      const negCtx = {
+        architectureId: 'arch-1',
+        nodes: [
+          {
+            id: 'rds-neg-bkp',
+            type: 'awsResource',
+            data: { resourceType: 'aws_db_instance', label: 'Negative Backup RDS', metadata: { backup_retention_period: -5 } },
+          },
+        ],
+        edges: [],
+      };
+      const negFindings = automatedBackupRetentionRule.evaluate(negCtx);
+      expect(negFindings).toHaveLength(1);
+      expect(negFindings[0].status).toBe('invalid');
+
+      // 4. Positive retention (>= 1) -> compliant (no findings)
+      const validCtx = {
+        architectureId: 'arch-1',
+        nodes: [
+          {
+            id: 'rds-ok-bkp',
+            type: 'awsResource',
+            data: { resourceType: 'aws_db_instance', label: 'Valid Backup RDS', metadata: { backup_retention_period: 7 } },
+          },
+        ],
+        edges: [],
+      };
+      expect(automatedBackupRetentionRule.evaluate(validCtx)).toHaveLength(0);
+    });
   });
 });

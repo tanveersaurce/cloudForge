@@ -17,14 +17,35 @@ export function runClientValidation(
   // STRUCT-001: Subnet Must Belong to a VPC
   const subnets = nodes.filter((n) => n.data.resourceType === 'aws_subnet');
   for (const subnet of subnets) {
-    const hasVpcParent = edges.some((edge) => {
-      if (edge.target !== subnet.id && edge.source !== subnet.id) return false;
-      const otherId = edge.target === subnet.id ? edge.source : edge.target;
-      const otherNode = nodes.find((n) => n.id === otherId);
-      return otherNode?.data.resourceType === 'aws_vpc';
+    const hasParentVpcId =
+      Boolean(subnet.parentId) &&
+      nodes.some((n) => n.id === subnet.parentId && n.data.resourceType === 'aws_vpc');
+
+    const hasVpcEdge = edges.some((edge) => {
+      const relType = edge.data?.relationshipType;
+      const dir = edge.data?.direction;
+
+      if (edge.target === subnet.id) {
+        const sourceNode = nodes.find((n) => n.id === edge.source);
+        if (sourceNode?.data.resourceType !== 'aws_vpc') return false;
+        if (!relType && dir !== 'target-to-source') return true;
+        if (relType === 'contains' && dir !== 'target-to-source') return true;
+        if ((relType === 'attached-to' || relType === 'depends-on') && dir === 'target-to-source') return true;
+        return false;
+      }
+
+      if (edge.source === subnet.id) {
+        const targetNode = nodes.find((n) => n.id === edge.target);
+        if (targetNode?.data.resourceType !== 'aws_vpc') return false;
+        if ((relType === 'attached-to' || relType === 'depends-on') && dir !== 'target-to-source') return true;
+        if (relType === 'contains' && dir === 'target-to-source') return true;
+        return false;
+      }
+
+      return false;
     });
 
-    if (!hasVpcParent) {
+    if (!hasParentVpcId && !hasVpcEdge) {
       findings.push({
         id: `STRUCT-001-${subnet.id}`,
         ruleId: 'STRUCT-001',
@@ -45,14 +66,35 @@ export function runClientValidation(
   const targetTypes = ['aws_instance', 'aws_db_instance', 'aws_nat_gateway'];
   const computeCandidates = nodes.filter((n) => targetTypes.includes(n.data.resourceType));
   for (const candidate of computeCandidates) {
-    const hasSubnetParent = edges.some((edge) => {
-      if (edge.target !== candidate.id && edge.source !== candidate.id) return false;
-      const otherId = edge.target === candidate.id ? edge.source : edge.target;
-      const otherNode = nodes.find((n) => n.id === otherId);
-      return otherNode?.data.resourceType === 'aws_subnet';
+    const hasParentSubnetId =
+      Boolean(candidate.parentId) &&
+      nodes.some((n) => n.id === candidate.parentId && n.data.resourceType === 'aws_subnet');
+
+    const hasSubnetEdge = edges.some((edge) => {
+      const relType = edge.data?.relationshipType;
+      const dir = edge.data?.direction;
+
+      if (edge.target === candidate.id) {
+        const sourceNode = nodes.find((n) => n.id === edge.source);
+        if (sourceNode?.data.resourceType !== 'aws_subnet') return false;
+        if (!relType && dir !== 'target-to-source') return true;
+        if (relType === 'contains' && dir !== 'target-to-source') return true;
+        if ((relType === 'attached-to' || relType === 'depends-on') && dir === 'target-to-source') return true;
+        return false;
+      }
+
+      if (edge.source === candidate.id) {
+        const targetNode = nodes.find((n) => n.id === edge.target);
+        if (targetNode?.data.resourceType !== 'aws_subnet') return false;
+        if ((relType === 'attached-to' || relType === 'depends-on') && dir !== 'target-to-source') return true;
+        if (relType === 'contains' && dir === 'target-to-source') return true;
+        return false;
+      }
+
+      return false;
     });
 
-    if (!hasSubnetParent) {
+    if (!hasParentSubnetId && !hasSubnetEdge) {
       findings.push({
         id: `STRUCT-002-${candidate.id}`,
         ruleId: 'STRUCT-002',
@@ -73,10 +115,28 @@ export function runClientValidation(
   const igws = nodes.filter((n) => n.data.resourceType === 'aws_internet_gateway');
   for (const igw of igws) {
     const hasVpcAttachment = edges.some((edge) => {
-      if (edge.target !== igw.id && edge.source !== igw.id) return false;
-      const otherId = edge.target === igw.id ? edge.source : edge.target;
-      const otherNode = nodes.find((n) => n.id === otherId);
-      return otherNode?.data.resourceType === 'aws_vpc';
+      const relType = edge.data?.relationshipType;
+      const dir = edge.data?.direction;
+
+      if (edge.source === igw.id) {
+        const targetNode = nodes.find((n) => n.id === edge.target);
+        if (targetNode?.data.resourceType !== 'aws_vpc') return false;
+        if (!relType && dir !== 'target-to-source') return true;
+        if ((relType === 'attached-to' || relType === 'depends-on') && dir !== 'target-to-source') return true;
+        if (relType === 'contains' && dir === 'target-to-source') return true;
+        return false;
+      }
+
+      if (edge.target === igw.id) {
+        const sourceNode = nodes.find((n) => n.id === edge.source);
+        if (sourceNode?.data.resourceType !== 'aws_vpc') return false;
+        if (!relType && dir !== 'target-to-source') return true;
+        if ((relType === 'attached-to' || relType === 'contains') && dir !== 'target-to-source') return true;
+        if ((relType === 'attached-to' || relType === 'depends-on') && dir === 'target-to-source') return true;
+        return false;
+      }
+
+      return false;
     });
 
     if (!hasVpcAttachment) {
@@ -213,6 +273,82 @@ export function runClientValidation(
     }
   }
 
+  // NET-005: NAT Gateway Must Reside in a Public Subnet
+  const natGateways = nodes.filter((n) => n.data.resourceType === 'aws_nat_gateway');
+  for (const nat of natGateways) {
+    const subnetEdge = edges.find((e) => {
+      if (e.target !== nat.id && e.source !== nat.id) return false;
+      const otherId = e.target === nat.id ? e.source : e.target;
+      const otherNode = nodes.find((n) => n.id === otherId);
+      return otherNode?.data.resourceType === 'aws_subnet';
+    });
+
+    if (!subnetEdge) continue;
+
+    const subnetId = subnetEdge.target === nat.id ? subnetEdge.source : subnetEdge.target;
+    const subnetNode = nodes.find((n) => n.id === subnetId);
+    if (!subnetNode) continue;
+
+    const hasRouteToIgw = edges.some((e) => {
+      if (e.source !== subnetNode.id && e.target !== subnetNode.id) return false;
+      const otherId = e.source === subnetNode.id ? e.target : e.source;
+      const otherNode = nodes.find((n) => n.id === otherId);
+      if (!otherNode) return false;
+
+      const relType = e.data?.relationshipType;
+      const dir = e.data?.direction;
+
+      if (otherNode.data.resourceType === 'aws_internet_gateway') {
+        if (!relType && dir !== 'target-to-source') return true;
+        if (relType === 'routes-to' || relType === 'attached-to') {
+          return dir !== 'target-to-source';
+        }
+        return false;
+      }
+
+      if (otherNode.data.resourceType === 'aws_route_table') {
+        const isValidSubnetRtEdge =
+          !relType ||
+          relType === 'attached-to' ||
+          relType === 'routes-to' ||
+          relType === 'depends-on';
+        if (!isValidSubnetRtEdge) return false;
+
+        return edges.some((rte) => {
+          if (rte.source !== otherNode.id && rte.target !== otherNode.id) return false;
+          const targetId = rte.source === otherNode.id ? rte.target : rte.source;
+          const targetNode = nodes.find((n) => n.id === targetId);
+          if (targetNode?.data.resourceType === 'aws_internet_gateway') return false;
+
+          const rtRelType = rte.data?.relationshipType;
+          const rtDir = rte.data?.direction;
+          if (!rtRelType && rtDir !== 'target-to-source') return true;
+          return (
+            (rtRelType === 'routes-to' || rtRelType === 'depends-on' || rtRelType === 'attached-to') &&
+            rtDir !== 'target-to-source'
+          );
+        });
+      }
+      return false;
+    });
+
+    if (!hasRouteToIgw) {
+      findings.push({
+        id: `NET-005-${nat.id}`,
+        ruleId: 'NET-005',
+        ruleTitle: 'NAT Gateway Must Reside in a Public Subnet',
+        category: 'network',
+        severity: 'high',
+        status: 'invalid',
+        affectedNodeIds: [nat.id, subnetNode.id],
+        message: `NAT Gateway "${nat.data.label || nat.id}" is placed in subnet "${subnetNode.data.label || subnetNode.id}" without an Internet Gateway route.`,
+        description: 'A NAT Gateway in a private subnet cannot route traffic to the internet.',
+        remediation: 'Ensure the Subnet hosting the NAT Gateway has a route table entry to an Internet Gateway.',
+        documentationUrl: 'https://docs.aws.amazon.com/vpc/latest/userguide/vpc-nat-gateway.html',
+      });
+    }
+  }
+
   // SEC-001: Public RDS Instance
   const dbNodes = nodes.filter((n) => n.data.resourceType === 'aws_db_instance');
   for (const db of dbNodes) {
@@ -335,7 +471,8 @@ export function runClientValidation(
 
   // REL-001: Multi-AZ RDS
   for (const db of dbNodes) {
-    if (db.data.metadata?.multi_az === false) {
+    const isMultiAz = db.data.metadata?.multi_az;
+    if (isMultiAz === false) {
       findings.push({
         id: `REL-001-${db.id}`,
         ruleId: 'REL-001',
@@ -348,6 +485,76 @@ export function runClientValidation(
         description: 'Single-AZ database instances are susceptible to downtime during maintenance or AZ outages.',
         remediation: 'Enable Multi-AZ deployment for automatic failover and high availability.',
         documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html',
+      });
+    } else if (isMultiAz === undefined || isMultiAz === null) {
+      findings.push({
+        id: `REL-001-unknown-${db.id}`,
+        ruleId: 'REL-001',
+        ruleTitle: 'RDS High Availability Multi-AZ Configuration',
+        category: 'reliability',
+        severity: 'medium',
+        status: 'unknown',
+        affectedNodeIds: [db.id],
+        message: `RDS Instance "${db.data.label || db.id}" does not specify a Multi-AZ deployment configuration.`,
+        description: 'Without Multi-AZ configured, high availability standby failover across availability zones cannot be verified.',
+        remediation: 'Explicitly configure "multi_az = true" in resource settings for high availability.',
+        documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html',
+      });
+    }
+  }
+
+  // REL-002: Automated Backup Retention
+  for (const db of dbNodes) {
+    const retention = db.data.metadata?.backup_retention_period;
+
+    if (retention === undefined || retention === null || retention === '') {
+      findings.push({
+        id: `REL-002-unknown-${db.id}`,
+        ruleId: 'REL-002',
+        ruleTitle: 'RDS Automated Backups Enabled',
+        category: 'reliability',
+        severity: 'medium',
+        status: 'unknown',
+        affectedNodeIds: [db.id],
+        message: `RDS Instance "${db.data.label || db.id}" has no backup retention period specified.`,
+        description: 'Automated backup retention is not configured, risking data loss in disaster recovery scenarios.',
+        remediation: 'Configure a backup retention period of between 7 and 35 days in resource properties.',
+        documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
+      });
+      continue;
+    }
+
+    const numRetention = Number(retention);
+    if (isNaN(numRetention) || numRetention < 0) {
+      findings.push({
+        id: `REL-002-invalid-${db.id}`,
+        ruleId: 'REL-002',
+        ruleTitle: 'RDS Automated Backups Enabled',
+        category: 'reliability',
+        severity: 'high',
+        status: 'invalid',
+        affectedNodeIds: [db.id],
+        message: `RDS Instance "${db.data.label || db.id}" has invalid backup retention configuration "${retention}".`,
+        description: 'Backup retention period must be a non-negative integer representing snapshot retention in days.',
+        remediation: 'Set backup_retention_period to an integer between 7 and 35 days.',
+        documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
+      });
+      continue;
+    }
+
+    if (numRetention === 0) {
+      findings.push({
+        id: `REL-002-${db.id}`,
+        ruleId: 'REL-002',
+        ruleTitle: 'RDS Automated Backups Enabled',
+        category: 'reliability',
+        severity: 'high',
+        status: 'invalid',
+        affectedNodeIds: [db.id],
+        message: `RDS Instance "${db.data.label || db.id}" has automated backups disabled (retention = 0).`,
+        description: 'A backup retention of 0 disables automated point-in-time recovery snapshots entirely.',
+        remediation: 'Configure a backup retention period of between 7 and 35 days.',
+        documentationUrl: 'https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html',
       });
     }
   }
