@@ -280,6 +280,221 @@ describe('Cost Optimization Section Component', () => {
     });
   });
 
+  it('does not show Applied when recommendation is returned as Partial Targets by Apply All', async () => {
+    const onApplyMock = vi.fn().mockResolvedValue(undefined);
+    const onApplyAllMock = vi.fn().mockResolvedValue({
+      applied: [],
+      skipped: [],
+      partialTargets: ['REC-GRAVITON-1'],
+      conflicting: [],
+      failed: [],
+      recalculationFailed: false,
+    });
+    const recommendations: CostOptimizationRecommendation[] = [
+      {
+        recommendationId: 'REC-GRAVITON-1',
+        title: 'Adopt AWS Graviton (t4g.large)',
+        category: 'compute',
+        priority: 'high',
+        affectedResourceIds: ['ec2-node'],
+        currentConfiguration: { instance_type: 't3.large' },
+        proposedConfiguration: { instance_type: 't4g.large' },
+        explanation: 'Switching to Graviton provides 20% lower cost.',
+        estimatedCurrentCost: 60.0,
+        estimatedOptimizedCost: 48.0,
+        estimatedMonthlySavings: 12.0,
+        savingsPercentage: 20,
+        currency: 'USD',
+        performanceImpact: 'improved',
+        securityImpact: 'neutral',
+        availabilityImpact: 'neutral',
+        implementationEffort: 'low',
+        confidenceLevel: 'high',
+        requiredAssumptions: ['Supports ARM64'],
+        documentationReferences: [{ title: 'AWS Graviton', url: 'https://aws.amazon.com' }],
+        status: 'pending',
+      },
+    ];
+
+    // First, individually apply the recommendation (adds to appliedIds)
+    const { rerender } = render(
+      <CostOptimizationSection
+        recommendations={recommendations}
+        onApply={onApplyMock}
+      />,
+    );
+
+    const applyBtn = screen.getByRole('button', { name: /Apply Optimization/i });
+    await user.click(applyBtn);
+
+    await waitFor(() => {
+      expect(onApplyMock).toHaveBeenCalledWith('REC-GRAVITON-1');
+    });
+
+    // Now simulate Apply All returning it as partialTargets
+    // Re-render with onApplyAll and the Apply All result
+    rerender(
+      <CostOptimizationSection
+        recommendations={recommendations}
+        onApply={onApplyMock}
+        onApplyAll={onApplyAllMock}
+      />,
+    );
+
+    // Click Apply All
+    const applyAllBtn = screen.getByRole('button', { name: /Apply All/i });
+    await user.click(applyAllBtn);
+
+    await waitFor(() => {
+      expect(onApplyAllMock).toHaveBeenCalled();
+    });
+
+    // Badge should show Partial Targets, NOT Applied
+    const partialLabels = screen.getAllByText('Partial Targets');
+    expect(partialLabels.length).toBe(2); // 1 count card title + 1 badge
+
+    // Button should show Apply Optimization, NOT Applied
+    expect(screen.getByRole('button', { name: /Apply Optimization/i })).toBeInTheDocument();
+  });
+
+  it('displays Partial Targets count and section when Apply All returns partialTargets', async () => {
+    const onApplyAllMock = vi.fn().mockResolvedValue({
+      applied: [],
+      skipped: [],
+      partialTargets: ['REC-1', 'REC-2'],
+      conflicting: [],
+      failed: [],
+      recalculationFailed: false,
+    });
+    const recommendations: CostOptimizationRecommendation[] = [
+      {
+        recommendationId: 'REC-1',
+        title: 'Optimization 1',
+        category: 'compute',
+        priority: 'high',
+        affectedResourceIds: ['ec2-1'],
+        currentConfiguration: { instance_type: 't3.large' },
+        proposedConfiguration: { instance_type: 't4g.large' },
+        explanation: 'Test explanation 1',
+        estimatedCurrentCost: 60.0,
+        estimatedOptimizedCost: 48.0,
+        estimatedMonthlySavings: 12.0,
+        savingsPercentage: 20,
+        currency: 'USD',
+        performanceImpact: 'improved',
+        securityImpact: 'neutral',
+        availabilityImpact: 'neutral',
+        implementationEffort: 'low',
+        confidenceLevel: 'high',
+        requiredAssumptions: [],
+        documentationReferences: [],
+        status: 'pending',
+      },
+      {
+        recommendationId: 'REC-2',
+        title: 'Optimization 2',
+        category: 'storage',
+        priority: 'medium',
+        affectedResourceIds: ['ebs-1'],
+        currentConfiguration: { volume_type: 'gp2' },
+        proposedConfiguration: { volume_type: 'gp3' },
+        explanation: 'Test explanation 2',
+        estimatedCurrentCost: 10.0,
+        estimatedOptimizedCost: 8.0,
+        estimatedMonthlySavings: 2.0,
+        savingsPercentage: 20,
+        currency: 'USD',
+        performanceImpact: 'neutral',
+        securityImpact: 'neutral',
+        availabilityImpact: 'neutral',
+        implementationEffort: 'low',
+        confidenceLevel: 'high',
+        requiredAssumptions: [],
+        documentationReferences: [],
+        status: 'pending',
+      },
+    ];
+
+    render(
+      <CostOptimizationSection
+        recommendations={recommendations}
+        onApply={vi.fn()}
+        onApplyAll={onApplyAllMock}
+      />,
+    );
+
+    const applyAllBtn = screen.getByRole('button', { name: /Apply All/i });
+    await user.click(applyAllBtn);
+
+    await waitFor(() => {
+      expect(onApplyAllMock).toHaveBeenCalled();
+    });
+
+    // Partial Targets count card (1 count card title + 2 badge labels = 3 elements)
+    const partialLabels = screen.getAllByText('Partial Targets');
+    expect(partialLabels.length).toBe(3);
+    expect(screen.getByText('2')).toBeInTheDocument();
+
+    // Partial Targets section listing
+    expect(screen.getByText('Partial Target Recommendations')).toBeInTheDocument();
+    expect(screen.getAllByText('Optimization 1').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Optimization 2').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('displays recalculation failure message when recalculationFailed is true', async () => {
+    const onApplyAllMock = vi.fn().mockResolvedValue({
+      applied: ['REC-1'],
+      skipped: [],
+      partialTargets: [],
+      conflicting: [],
+      failed: [],
+      recalculationFailed: true,
+    });
+    const recommendations: CostOptimizationRecommendation[] = [
+      {
+        recommendationId: 'REC-1',
+        title: 'Optimization 1',
+        category: 'compute',
+        priority: 'high',
+        affectedResourceIds: ['ec2-1'],
+        currentConfiguration: { instance_type: 't3.large' },
+        proposedConfiguration: { instance_type: 't4g.large' },
+        explanation: 'Test explanation',
+        estimatedCurrentCost: 60.0,
+        estimatedOptimizedCost: 48.0,
+        estimatedMonthlySavings: 12.0,
+        savingsPercentage: 20,
+        currency: 'USD',
+        performanceImpact: 'improved',
+        securityImpact: 'neutral',
+        availabilityImpact: 'neutral',
+        implementationEffort: 'low',
+        confidenceLevel: 'high',
+        requiredAssumptions: [],
+        documentationReferences: [],
+        status: 'pending',
+      },
+    ];
+
+    render(
+      <CostOptimizationSection
+        recommendations={recommendations}
+        onApply={vi.fn()}
+        onApplyAll={onApplyAllMock}
+      />,
+    );
+
+    const applyAllBtn = screen.getByRole('button', { name: /Apply All/i });
+    await user.click(applyAllBtn);
+
+    await waitFor(() => {
+      expect(onApplyAllMock).toHaveBeenCalled();
+    });
+
+    expect(screen.getByText('Cost Recalculation Failed')).toBeInTheDocument();
+    expect(screen.getByText(/Database updates were applied/)).toBeInTheDocument();
+  });
+
   describe('Pricing Engine Accuracy, Regional Scaling & Missing Configurations', () => {
     it('applies regional pricing multipliers accurately in client-side calculations', () => {
       const node: ArchitectureFlowNode = {

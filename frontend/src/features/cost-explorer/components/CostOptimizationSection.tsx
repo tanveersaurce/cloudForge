@@ -272,6 +272,11 @@ export const CostOptimizationSection: React.FC<CostOptimizationSectionProps> = (
                     ? 'failed'
                     : null;
 
+          // A recommendation previously marked Applied (via individual apply or
+          // a prior Apply All) must not show as Applied if the latest Apply All
+          // classified it as partial/conflicting/skipped/failed.
+          const isEffectivelyApplied = isApplied && applyAllStatus === null;
+
           const statusConfig = {
             applied: { label: 'Applied', color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/30', icon: <CheckCircle className="w-3.5 h-3.5" /> },
             partial: { label: 'Partial Targets', color: 'text-yellow-400', bg: 'bg-yellow-500/10', border: 'border-yellow-500/30', icon: <Minus className="w-3.5 h-3.5" /> },
@@ -286,7 +291,7 @@ export const CostOptimizationSection: React.FC<CostOptimizationSectionProps> = (
             <div
               key={rec.recommendationId}
               className={`p-4 rounded-xl border transition-all ${
-                isApplied
+                isEffectivelyApplied
                   ? 'border-emerald-500/50 bg-emerald-950/20'
                   : 'border-slate-800 bg-slate-900/60 hover:border-slate-700'
               }`}
@@ -316,7 +321,7 @@ export const CostOptimizationSection: React.FC<CostOptimizationSectionProps> = (
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {isApplied ? (
+                  {isEffectivelyApplied ? (
                     <span className="flex items-center gap-1 text-xs font-semibold text-emerald-400">
                       <CheckCircle className="w-3.5 h-3.5" />
                       Applied
