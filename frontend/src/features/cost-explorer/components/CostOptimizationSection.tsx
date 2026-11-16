@@ -1,26 +1,29 @@
 import React, { useState } from 'react';
 import {
-  Sparkles,
   ArrowRight,
-  Shield,
-  Zap,
   CheckCircle,
-  ExternalLink,
   ChevronDown,
   ChevronUp,
+  ExternalLink,
+  Shield,
+  Sparkles,
+  Zap,
 } from 'lucide-react';
 import type { CostOptimizationRecommendation } from '../types/pricing.types';
 
 interface CostOptimizationSectionProps {
   recommendations: CostOptimizationRecommendation[];
   onApply: (recommendationId: string) => Promise<void>;
+  onApplyAll?: () => Promise<void>;
 }
 
 export const CostOptimizationSection: React.FC<CostOptimizationSectionProps> = ({
   recommendations,
   onApply,
+  onApplyAll,
 }) => {
   const [applyingId, setApplyingId] = useState<string | null>(null);
+  const [applyingAll, setApplyingAll] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [appliedIds, setAppliedIds] = useState<string[]>([]);
 
@@ -31,6 +34,18 @@ export const CostOptimizationSection: React.FC<CostOptimizationSectionProps> = (
       setAppliedIds((prev) => [...prev, recId]);
     } finally {
       setApplyingId(null);
+    }
+  };
+
+  const handleApplyAllClick = async () => {
+    setApplyingAll(true);
+    try {
+      await onApplyAll?.();
+      setAppliedIds(
+        recommendations.map((r) => r.recommendationId),
+      );
+    } finally {
+      setApplyingAll(false);
     }
   };
 
@@ -64,9 +79,31 @@ export const CostOptimizationSection: React.FC<CostOptimizationSectionProps> = (
             </p>
           </div>
         </div>
-        <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
-          {recommendations.length} Available
-        </span>
+        <div className="flex items-center gap-2">
+          {onApplyAll && (
+            <button
+              type="button"
+              disabled={applyingAll}
+              onClick={handleApplyAllClick}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {applyingAll ? (
+                <>
+                  <ArrowRight className="w-3 h-3 animate-spin" />
+                  <span>Applying All...</span>
+                </>
+              ) : (
+                <>
+                  <Zap className="w-3 h-3" />
+                  <span>Apply All ({recommendations.length})</span>
+                </>
+              )}
+            </button>
+          )}
+          <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
+            {recommendations.length} Available
+          </span>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-3.5">

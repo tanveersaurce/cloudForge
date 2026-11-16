@@ -15,6 +15,7 @@ import { DashboardPage } from '@/features/dashboard/pages/DashboardPage';
 import { DashboardLayout } from '@/layouts/DashboardLayout';
 import { NotFoundPage } from '@/pages/NotFoundPage';
 import { PlannedModulePage } from '@/pages/PlannedModulePage';
+import { TerraformExportPage } from '@/features/terraform/TerraformExportPage';
 
 export function AppRoutes() {
   return (
@@ -41,7 +42,7 @@ export function AppRoutes() {
           <Route path="/services/:slug" element={<AwsServiceDetailPage />} />
           <Route path="/architectures" element={<ArchitecturesListPage />} />
           <Route path="/cost-explorer" element={<PlannedModulePage moduleId="cost-explorer" />} />
-          <Route path="/terraform" element={<PlannedModulePage moduleId="terraform" />} />
+          <Route path="/terraform" element={<TerraformExportPage />} />
           <Route path="/deployments" element={<PlannedModulePage moduleId="deployments" />} />
           <Route path="/settings" element={<PlannedModulePage moduleId="settings" />} />
           <Route path="*" element={<NotFoundPage />} />

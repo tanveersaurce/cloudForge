@@ -115,3 +115,16 @@ export const handleApplyOptimization = asyncHandler(async (req: Request, res: Re
   };
   res.status(200).json(response);
 });
+
+export const handleApplyAllOptimizations = asyncHandler(async (req: Request, res: Response) => {
+  const userId = requireAuthenticatedUserId(req);
+  const { id } = req.params;
+
+  const result = await PricingService.applyAllOptimizations(id, userId);
+  const response: ApiResponse<CostEstimationResult> = {
+    success: true,
+    data: result,
+    timestamp: new Date().toISOString(),
+  };
+  res.status(200).json(response);
+});

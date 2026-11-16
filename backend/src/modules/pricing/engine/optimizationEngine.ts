@@ -101,6 +101,8 @@ export class CostOptimizationEngine {
           const optimizedMonthly = sizeGb * gp3Rate.pricePerUnit;
           const savings = currentMonthly - optimizedMonthly;
 
+          if (savings <= 0) continue;
+
           recommendations.push({
             recommendationId: `OPT-STORAGE-GP3-${ebs.id}`,
             title: `Upgrade EBS Volume "${ebs.data.label || ebs.id}" from gp2 to gp3`,

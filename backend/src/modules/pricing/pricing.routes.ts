@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../../middleware/requireAuth.js';
 import {
+  handleApplyAllOptimizations,
   handleApplyOptimization,
   handleGetCostAssumptions,
   handleGetCostEstimate,
@@ -28,4 +29,9 @@ pricingRouter.post(
   '/architectures/:id/cost-optimizations/:recommendationId/apply',
   requireAuth,
   handleApplyOptimization,
+);
+pricingRouter.post(
+  '/architectures/:id/cost-optimizations/apply-all',
+  requireAuth,
+  handleApplyAllOptimizations,
 );

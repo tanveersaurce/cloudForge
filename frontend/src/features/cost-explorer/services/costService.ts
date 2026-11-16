@@ -63,3 +63,15 @@ export async function applyCostOptimizationApi(
   );
   return res.data;
 }
+
+export async function applyAllCostOptimizationsApi(
+  architectureId: string,
+): Promise<CostEstimationResult> {
+  const res = await apiFetch<ApiSuccessResponse<CostEstimationResult>>(
+    `/architectures/${encodeURIComponent(architectureId)}/cost-optimizations/apply-all`,
+    {
+      method: 'POST',
+    },
+  );
+  return res.data;
+}

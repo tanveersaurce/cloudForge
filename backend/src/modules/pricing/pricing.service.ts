@@ -341,4 +341,71 @@ export class PricingService {
     // Recalculate cost with new configuration
     return this.calculateCost(architectureId, userId);
   }
+
+  public static async applyAllOptimizations(
+    architectureId: string,
+    userId: string,
+  ): Promise<CostEstimationResult> {
+    const arch = await prisma.architecture.findUnique({
+      where: { id: architectureId },
+    });
+
+    if (!arch) throw ApiError.notFound('Architecture not found');
+    if (!arch.userId || arch.userId !== userId) {
+      throw new ApiError(403, 'You do not have access to this architecture', 'FORBIDDEN');
+    }
+
+    const current = await this.calculateCost(architectureId, userId);
+    const recommendations = current.recommendations.filter((r) => r.status === 'pending');
+
+    if (recommendations.length === 0) {
+      return current;
+    }
+
+    const nodes = (Array.isArray(arch.nodes) ? arch.nodes : []) as Array<{
+      id: string;
+      type: string;
+      data: {
+        resourceType: string;
+        resourceName?: string;
+        label?: string;
+        metadata?: Record<string, unknown>;
+        [key: string]: unknown;
+      };
+    }>;
+
+    const modifiedNodes = nodes.map((node) => {
+      const applicableRecs = recommendations.filter((r) =>
+        r.affectedResourceIds.includes(node.id)
+      );
+
+      if (applicableRecs.length === 0) return node;
+
+      const mergedMetadata = applicableRecs.reduce(
+        (acc, rec) => ({ ...acc, ...rec.proposedConfiguration }),
+        {} as Record<string, unknown>
+      );
+
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          metadata: {
+            ...(node.data.metadata || {}),
+            ...mergedMetadata,
+          },
+        },
+      };
+    });
+
+    await prisma.architecture.update({
+      where: { id: architectureId },
+      data: {
+        nodes: modifiedNodes as unknown as Prisma.InputJsonValue,
+        updatedAt: new Date(),
+      },
+    });
+
+    return this.calculateCost(architectureId, userId);
+  }
 }

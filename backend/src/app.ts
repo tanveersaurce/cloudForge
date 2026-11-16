@@ -13,6 +13,7 @@ import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
 import { healthRouter } from './modules/health/health.routes.js';
 import { pricingRouter } from './modules/pricing/pricing.routes.js';
 import { validationRouter } from './modules/validation/validation.routes.js';
+import { terraformRouter } from './modules/terraform-generator/terraform-generator.routes.js';
 
 export function createApp() {
   const app = express();
@@ -57,6 +58,7 @@ export function createApp() {
   app.use('/api/architectures', architectureRouter);
   app.use('/api/validation', validationRouter);
   app.use('/api/pricing', pricingRouter);
+  app.use('/api/terraform', terraformRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

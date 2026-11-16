@@ -17,6 +17,7 @@ import { CostOptimizationSection } from '../components/CostOptimizationSection';
 import { calculateClientCost, isSupportedRegion } from '../engine/clientCostCalculator';
 import { getArchitectureById } from '@/features/architecture-builder/services/architectureService';
 import {
+  applyAllCostOptimizationsApi,
   applyCostOptimizationApi,
   getCostEstimateApi,
   postCostEstimateApi,
@@ -100,6 +101,16 @@ export const CostExplorerPage: React.FC = () => {
       setEstimate(recalculated);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to apply optimization');
+    }
+  };
+
+  const handleApplyAll = async () => {
+    if (!architectureId) return;
+    try {
+      const recalculated = await applyAllCostOptimizationsApi(architectureId);
+      setEstimate(recalculated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to apply all optimizations');
     }
   };
 
@@ -226,6 +237,7 @@ export const CostExplorerPage: React.FC = () => {
                 <CostOptimizationSection
                   recommendations={estimate.recommendations}
                   onApply={handleApplyOptimization}
+                  onApplyAll={handleApplyAll}
                 />
               </div>
             </div>
