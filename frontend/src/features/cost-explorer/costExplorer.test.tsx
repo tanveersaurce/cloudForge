@@ -1795,5 +1795,291 @@ describe('Cost Optimization Section Component', () => {
         expect(analysis.overlapNotes.some((n) => n.includes('savingsPercentage exceeding 100% (150%)'))).toBe(true);
       });
     });
+
+    describe('Optimization Engine Critical Fixes (Phase 08 Audit)', () => {
+      it('selects optimal combination over greedy in conflict component with > 15 recommendations', () => {
+        const recs: CostOptimizationRecommendation[] = [
+          {
+            recommendationId: 'REC-DOMINANT',
+            title: 'Multi-Resource Instance Upgrade',
+            category: 'compute',
+            priority: 'high',
+            affectedResourceIds: ['ec2-1', 'ec2-2'],
+            currentConfiguration: { instance_type: 'm5.large' },
+            proposedConfiguration: { instance_type: 'm6g.large' },
+            explanation: '',
+            estimatedCurrentCost: 200.0,
+            estimatedOptimizedCost: 100.0,
+            estimatedMonthlySavings: 100.0,
+            savingsPercentage: 50,
+            currency: 'USD',
+            performanceImpact: 'neutral',
+            securityImpact: 'neutral',
+            availabilityImpact: 'neutral',
+            implementationEffort: 'low',
+            confidenceLevel: 'high',
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending',
+          },
+          {
+            recommendationId: 'REC-SUB-1',
+            title: 'EC2-1 Dedicated Optimization',
+            category: 'compute',
+            priority: 'high',
+            affectedResourceIds: ['ec2-1'],
+            currentConfiguration: { instance_type: 'm5.large' },
+            proposedConfiguration: { instance_type: 'c6g.large' },
+            explanation: '',
+            estimatedCurrentCost: 100.0,
+            estimatedOptimizedCost: 40.0,
+            estimatedMonthlySavings: 60.0,
+            savingsPercentage: 60,
+            currency: 'USD',
+            performanceImpact: 'neutral',
+            securityImpact: 'neutral',
+            availabilityImpact: 'neutral',
+            implementationEffort: 'low',
+            confidenceLevel: 'high',
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending',
+          },
+          {
+            recommendationId: 'REC-SUB-2',
+            title: 'EC2-2 Dedicated Optimization',
+            category: 'compute',
+            priority: 'high',
+            affectedResourceIds: ['ec2-2'],
+            currentConfiguration: { instance_type: 'm5.large' },
+            proposedConfiguration: { instance_type: 'c6g.large' },
+            explanation: '',
+            estimatedCurrentCost: 100.0,
+            estimatedOptimizedCost: 40.0,
+            estimatedMonthlySavings: 60.0,
+            savingsPercentage: 60,
+            currency: 'USD',
+            performanceImpact: 'neutral',
+            securityImpact: 'neutral',
+            availabilityImpact: 'neutral',
+            implementationEffort: 'low',
+            confidenceLevel: 'high',
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending',
+          },
+        ];
+
+        for (let i = 3; i <= 15; i++) {
+          recs.push({
+            recommendationId: `REC-EXTRA-${i}`,
+            title: `Extra Rec ${i}`,
+            category: 'compute',
+            priority: 'low',
+            affectedResourceIds: ['ec2-1'],
+            currentConfiguration: { instance_type: 'm5.large' },
+            proposedConfiguration: { instance_type: `t4g.${i}xlarge` },
+            explanation: '',
+            estimatedCurrentCost: 100.0,
+            estimatedOptimizedCost: 98.0,
+            estimatedMonthlySavings: 2.0,
+            savingsPercentage: 2,
+            currency: 'USD',
+            performanceImpact: 'neutral',
+            securityImpact: 'neutral',
+            availabilityImpact: 'neutral',
+            implementationEffort: 'low',
+            confidenceLevel: 'low',
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending',
+          });
+        }
+
+        const costs = new Map<string, number>([
+          ['ec2-1', 100.0],
+          ['ec2-2', 100.0],
+        ]);
+
+        const analysis = calculateAchievableSavings(recs, costs);
+        expect(analysis.combinedAchievableSavings).toBe(120.0);
+        expect(analysis.overlapNotes.some((n) => n.includes('heuristic optimization strategy'))).toBe(false);
+      });
+
+      it('transparently reports heuristic fallback when conflict component exceeds search complexity limit', () => {
+        const recs: CostOptimizationRecommendation[] = [];
+        for (let i = 1; i <= 30; i++) {
+          const r1 = `res-${(i % 10) + 1}`;
+          const r2 = `res-${((i + 1) % 10) + 1}`;
+          recs.push({
+            recommendationId: `REC-CHAIN-${i}`,
+            title: `Chain Rec ${i}`,
+            category: 'compute',
+            priority: 'medium',
+            affectedResourceIds: [r1, r2],
+            currentConfiguration: { instance_type: 't3.medium' },
+            proposedConfiguration: { instance_type: 't4g.medium' },
+            explanation: '',
+            estimatedCurrentCost: 100.0,
+            estimatedOptimizedCost: 80.0,
+            estimatedMonthlySavings: 20.0,
+            savingsPercentage: 20,
+            currency: 'USD',
+            performanceImpact: 'neutral',
+            securityImpact: 'neutral',
+            availabilityImpact: 'neutral',
+            implementationEffort: 'low',
+            confidenceLevel: 'medium',
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending',
+          });
+        }
+
+        const costs = new Map<string, number>();
+        for (let r = 1; r <= 10; r++) costs.set(`res-${r}`, 100.0);
+
+        const analysis = calculateAchievableSavings(recs, costs);
+        expect(analysis.combinedAchievableSavings).toBeGreaterThan(0);
+        expect(analysis.overlapNotes.some((n) => n.includes('heuristic optimization strategy'))).toBe(true);
+      });
+
+      it('allocates Savings Plan savings proportionally with unequal resource costs', () => {
+        const costs = new Map<string, number>([
+          ['ec2-a', 20.0],
+          ['ec2-b', 180.0],
+        ]);
+
+        const recs: CostOptimizationRecommendation[] = [
+          {
+            recommendationId: 'REC-SP-PROPORTIONAL',
+            title: '10 Percent Savings Plan',
+            category: 'pricing-model',
+            priority: 'high',
+            affectedResourceIds: ['ec2-a', 'ec2-b'],
+            currentConfiguration: { pricing_model: 'On-Demand' },
+            proposedConfiguration: { pricing_model: 'Savings Plan' },
+            explanation: '',
+            estimatedCurrentCost: 200.0,
+            estimatedOptimizedCost: 180.0,
+            estimatedMonthlySavings: 20.0,
+            savingsPercentage: 10,
+            currency: 'USD',
+            performanceImpact: 'neutral',
+            securityImpact: 'neutral',
+            availabilityImpact: 'neutral',
+            implementationEffort: 'low',
+            confidenceLevel: 'high',
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending',
+          },
+        ];
+
+        const analysis = calculateAchievableSavings(recs, costs);
+        expect(analysis.combinedAchievableSavings).toBe(20.0);
+
+        const recsWithFollowUp: CostOptimizationRecommendation[] = [
+          {
+            recommendationId: 'REC-EC2A-STORAGE',
+            title: 'EC2-A Storage Optimization',
+            category: 'storage',
+            priority: 'medium',
+            affectedResourceIds: ['ec2-a'],
+            currentConfiguration: { volume_type: 'gp2' },
+            proposedConfiguration: { volume_type: 'gp3' },
+            explanation: '',
+            estimatedCurrentCost: 20.0,
+            estimatedOptimizedCost: 10.0,
+            estimatedMonthlySavings: 10.0,
+            savingsPercentage: 50,
+            currency: 'USD',
+            performanceImpact: 'neutral',
+            securityImpact: 'neutral',
+            availabilityImpact: 'neutral',
+            implementationEffort: 'low',
+            confidenceLevel: 'high',
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending',
+          },
+          recs[0],
+        ];
+
+        const analysisWithFollowUp = calculateAchievableSavings(recsWithFollowUp, costs);
+        expect(analysisWithFollowUp.combinedAchievableSavings).toBe(29.0);
+      });
+
+      it('safely handles zero-cost resources and rounding boundaries without negative cost or lost cents', () => {
+        const costs = new Map<string, number>([
+          ['ec2-zero', 0.0],
+          ['ec2-active', 100.0],
+        ]);
+
+        const recs: CostOptimizationRecommendation[] = [
+          {
+            recommendationId: 'REC-SP-ZERO-RES',
+            title: 'Savings Plan with Zero-Cost Resource',
+            category: 'pricing-model',
+            priority: 'medium',
+            affectedResourceIds: ['ec2-zero', 'ec2-active'],
+            currentConfiguration: { pricing_model: 'On-Demand' },
+            proposedConfiguration: { pricing_model: 'Savings Plan' },
+            explanation: '',
+            estimatedCurrentCost: 100.0,
+            estimatedOptimizedCost: 80.0,
+            estimatedMonthlySavings: 20.0,
+            savingsPercentage: 20,
+            currency: 'USD',
+            performanceImpact: 'neutral',
+            securityImpact: 'neutral',
+            availabilityImpact: 'neutral',
+            implementationEffort: 'low',
+            confidenceLevel: 'high',
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending',
+          },
+        ];
+
+        const analysis = calculateAchievableSavings(recs, costs);
+        expect(analysis.combinedAchievableSavings).toBe(20.0);
+
+        const splitCosts = new Map<string, number>([
+          ['res-1', 33.33],
+          ['res-2', 33.33],
+          ['res-3', 33.34],
+        ]);
+
+        const splitRecs: CostOptimizationRecommendation[] = [
+          {
+            recommendationId: 'REC-SP-SPLIT',
+            title: '10 Percent Savings Plan Split Across 3 Resources',
+            category: 'pricing-model',
+            priority: 'high',
+            affectedResourceIds: ['res-1', 'res-2', 'res-3'],
+            currentConfiguration: { pricing_model: 'On-Demand' },
+            proposedConfiguration: { pricing_model: 'Savings Plan' },
+            explanation: '',
+            estimatedCurrentCost: 100.0,
+            estimatedOptimizedCost: 90.0,
+            estimatedMonthlySavings: 10.0,
+            savingsPercentage: 10,
+            currency: 'USD',
+            performanceImpact: 'neutral',
+            securityImpact: 'neutral',
+            availabilityImpact: 'neutral',
+            implementationEffort: 'low',
+            confidenceLevel: 'high',
+            requiredAssumptions: [],
+            documentationReferences: [],
+            status: 'pending',
+          },
+        ];
+
+        const splitAnalysis = calculateAchievableSavings(splitRecs, splitCosts);
+        expect(splitAnalysis.combinedAchievableSavings).toBe(10.0);
+      });
+    });
   });
 });

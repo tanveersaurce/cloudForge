@@ -1049,32 +1049,37 @@ export function calculateAchievableSavings(
         continue;
       }
 
-      // Safe complexity limit: 15
-      if (comp.length > 15) {
-        const greedySelected: CostOptimizationRecommendation[] = [];
-        for (const cand of comp) {
-          let conflicts = false;
-          for (const sel of greedySelected) {
-            if (architecturalRecsConflict(cand, sel).hasConflict) {
-              conflicts = true;
-              break;
-            }
+      // Seed with deterministic greedy selection
+      const greedySelected: CostOptimizationRecommendation[] = [];
+      for (const cand of comp) {
+        let conflicts = false;
+        for (const sel of greedySelected) {
+          if (architecturalRecsConflict(cand, sel).hasConflict) {
+            conflicts = true;
+            break;
           }
-          if (!conflicts) greedySelected.push(cand);
         }
-        optimalRecs.push(...greedySelected);
-        continue;
+        if (!conflicts) greedySelected.push(cand);
       }
+      const greedySim = simulateArchitecturalSubset(greedySelected, resourceStates);
+      let bestSubset = [...greedySelected];
+      let bestSavings = greedySim.totalSavings;
 
-      // Branch-and-bound search over component
-      let bestSubset: CostOptimizationRecommendation[] = [];
-      let bestSavings = -1;
+      let searchSteps = 0;
+      let isExact = true;
+      const MAX_SEARCH_STEPS = 5000;
 
       function search(
         idx: number,
         currentSel: CostOptimizationRecommendation[],
         excludedIds: Set<string>,
       ) {
+        searchSteps++;
+        if (searchSteps > MAX_SEARCH_STEPS) {
+          isExact = false;
+          return;
+        }
+
         if (idx === comp.length) {
           const { totalSavings } = simulateArchitecturalSubset(currentSel, resourceStates);
           if (totalSavings > bestSavings + 0.001) {
@@ -1112,6 +1117,12 @@ export function calculateAchievableSavings(
 
       search(0, [], new Set());
       optimalRecs.push(...bestSubset);
+
+      if (!isExact) {
+        overlapNotes.push(
+          `Optimization complexity limit reached for conflict group of ${comp.length} recommendations. Applied heuristic optimization strategy; results may be near-optimal rather than globally proven optimal.`,
+        );
+      }
     }
 
     return optimalRecs.sort((a, b) => {
@@ -1243,6 +1254,97 @@ export function calculateAchievableSavings(
     return Math.round(Math.min(baseline, Math.min(spRec.estimatedMonthlySavings, nominal)) * 100) / 100;
   }
 
+  function allocateSpSavingsProportionally(
+    planSavings: number,
+    affectedResourceIds: string[],
+    getEligibleCost: (resId: string) => number,
+  ): Map<string, number> {
+    const allocations = new Map<string, number>();
+    if (planSavings <= 0 || affectedResourceIds.length === 0) {
+      for (const resId of affectedResourceIds) allocations.set(resId, 0);
+      return allocations;
+    }
+
+    const eligibleCosts = affectedResourceIds.map((resId) => Math.max(0, getEligibleCost(resId)));
+    const totalEligible = Math.round(eligibleCosts.reduce((sum, c) => sum + c, 0) * 100) / 100;
+
+    if (totalEligible <= 0) {
+      for (const resId of affectedResourceIds) allocations.set(resId, 0);
+      return allocations;
+    }
+
+    let allocatedSum = 0;
+    for (let i = 0; i < affectedResourceIds.length; i++) {
+      const resId = affectedResourceIds[i];
+      const cost = eligibleCosts[i];
+      if (cost <= 0) {
+        allocations.set(resId, 0);
+        continue;
+      }
+      let rawShare = Math.round((planSavings * (cost / totalEligible)) * 100) / 100;
+      rawShare = Math.min(cost, rawShare);
+      allocations.set(resId, rawShare);
+      allocatedSum = Math.round((allocatedSum + rawShare) * 100) / 100;
+    }
+
+    let diff = Math.round((planSavings - allocatedSum) * 100) / 100;
+    if (diff > 0) {
+      const sortedIndices = affectedResourceIds
+        .map((_, i) => i)
+        .filter((i) => eligibleCosts[i] > (allocations.get(affectedResourceIds[i]) || 0))
+        .sort((a, b) => {
+          const costDiff = eligibleCosts[b] - eligibleCosts[a];
+          if (Math.abs(costDiff) > 0.001) return costDiff;
+          return affectedResourceIds[a].localeCompare(affectedResourceIds[b]);
+        });
+
+      while (diff > 0.001) {
+        let anyAdded = false;
+        for (const idx of sortedIndices) {
+          if (diff <= 0.001) break;
+          const resId = affectedResourceIds[idx];
+          const current = allocations.get(resId) || 0;
+          const maxAdd = Math.round((eligibleCosts[idx] - current) * 100) / 100;
+          if (maxAdd > 0.001) {
+            const add = Math.min(diff, maxAdd, 0.01);
+            allocations.set(resId, Math.round((current + add) * 100) / 100);
+            diff = Math.round((diff - add) * 100) / 100;
+            anyAdded = true;
+          }
+        }
+        if (!anyAdded) break;
+      }
+    } else if (diff < 0) {
+      let excess = Math.abs(diff);
+      const sortedIndices = affectedResourceIds
+        .map((_, i) => i)
+        .filter((i) => (allocations.get(affectedResourceIds[i]) || 0) > 0)
+        .sort((a, b) => {
+          const costDiff = eligibleCosts[a] - eligibleCosts[b];
+          if (Math.abs(costDiff) > 0.001) return costDiff;
+          return affectedResourceIds[b].localeCompare(affectedResourceIds[a]);
+        });
+
+      while (excess > 0.001) {
+        let anyDeducted = false;
+        for (const idx of sortedIndices) {
+          if (excess <= 0.001) break;
+          const resId = affectedResourceIds[idx];
+          const current = allocations.get(resId) || 0;
+          if (current > 0.001) {
+            const deduct = Math.min(excess, current, 0.01);
+            allocations.set(resId, Math.round((current - deduct) * 100) / 100);
+            excess = Math.round((excess - deduct) * 100) / 100;
+            anyDeducted = true;
+          }
+        }
+        if (!anyDeducted) break;
+      }
+    }
+
+    return allocations;
+  }
+
   function simulateSpSubset(
     subset: CostOptimizationRecommendation[],
   ): { totalSavings: number } {
@@ -1258,18 +1360,19 @@ export function calculateAchievableSavings(
     }
 
     for (const spRec of subset) {
-      let baseline = 0;
       const resourceCount = Math.max(1, spRec.affectedResourceIds.length);
       const equalShareCost = (spRec.estimatedCurrentCost || 0) / resourceCount;
 
-      for (const resId of spRec.affectedResourceIds) {
+      const getResEligibleCost = (resId: string) => {
         const state = simStates.get(resId);
-        if (state) {
-          planEligibleBaseline += state.remainingCost;
-        } else {
-          const known = costLookup.get(resId);
-          baseline += known !== undefined ? known : equalShareCost;
-        }
+        if (state) return state.remainingCost;
+        const known = costLookup.get(resId);
+        return known !== undefined ? known : equalShareCost;
+      };
+
+      let baseline = 0;
+      for (const resId of spRec.affectedResourceIds) {
+        baseline += getResEligibleCost(resId);
       }
       baseline = Math.round(baseline * 100) / 100;
 
@@ -1282,10 +1385,16 @@ export function calculateAchievableSavings(
       const nominal = Math.round(baseline * (pct / 100) * 100) / 100;
       const planSav = Math.min(baseline, nominal);
 
+      const spAllocations = allocateSpSavingsProportionally(
+        planSav,
+        spRec.affectedResourceIds,
+        getResEligibleCost,
+      );
+
       for (const resId of spRec.affectedResourceIds) {
         const state = simStates.get(resId);
         if (state) {
-          const share = planSav / resourceCount;
+          const share = spAllocations.get(resId) || 0;
           state.remainingCost = Math.max(0, Math.round((state.remainingCost - share) * 100) / 100);
         }
       }
@@ -1343,32 +1452,37 @@ export function calculateAchievableSavings(
         continue;
       }
 
-      // Safe complexity limit: 15
-      if (comp.length > 15) {
-        const greedySelected: CostOptimizationRecommendation[] = [];
-        for (const cand of comp) {
-          let conflicts = false;
-          for (const sel of greedySelected) {
-            if (spRecsConflict(cand, sel).hasConflict) {
-              conflicts = true;
-              break;
-            }
+      // Seed with deterministic greedy selection
+      const greedySelected: CostOptimizationRecommendation[] = [];
+      for (const cand of comp) {
+        let conflicts = false;
+        for (const sel of greedySelected) {
+          if (spRecsConflict(cand, sel).hasConflict) {
+            conflicts = true;
+            break;
           }
-          if (!conflicts) greedySelected.push(cand);
         }
-        optimalRecs.push(...greedySelected);
-        continue;
+        if (!conflicts) greedySelected.push(cand);
       }
+      const greedySim = simulateSpSubset(greedySelected);
+      let bestSubset = [...greedySelected];
+      let bestSavings = greedySim.totalSavings;
 
-      // Branch-and-bound search over component
-      let bestSubset: CostOptimizationRecommendation[] = [];
-      let bestSavings = -1;
+      let searchSteps = 0;
+      let isExact = true;
+      const MAX_SEARCH_STEPS = 5000;
 
       function search(
         idx: number,
         currentSel: CostOptimizationRecommendation[],
         excludedIds: Set<string>,
       ) {
+        searchSteps++;
+        if (searchSteps > MAX_SEARCH_STEPS) {
+          isExact = false;
+          return;
+        }
+
         if (idx === comp.length) {
           const { totalSavings } = simulateSpSubset(currentSel);
           if (totalSavings > bestSavings + 0.001) {
@@ -1406,6 +1520,12 @@ export function calculateAchievableSavings(
 
       search(0, [], new Set());
       optimalRecs.push(...bestSubset);
+
+      if (!isExact) {
+        overlapNotes.push(
+          `Optimization complexity limit reached for commitment plan conflict group of ${comp.length} recommendations. Applied heuristic optimization strategy; results may be near-optimal rather than globally proven optimal.`,
+        );
+      }
     }
 
     return optimalRecs.sort((a, b) => {
@@ -1440,24 +1560,25 @@ export function calculateAchievableSavings(
 
   for (const spRec of optimalSpRecs) {
     // Calculate eligible compute baseline using ONLY the plan's affected resources
-    let planEligibleBaseline = 0;
     let hadPriorArchitecturalReductions = false;
 
     const resourceCount = Math.max(1, spRec.affectedResourceIds.length);
     const equalShareCost = (spRec.estimatedCurrentCost || 0) / resourceCount;
 
+    const getResEligibleCost = (resId: string) => {
+      const state = resourceStates.get(resId);
+      if (state) return state.remainingCost;
+      const knownCost = costLookup.get(resId);
+      return knownCost !== undefined ? knownCost : equalShareCost;
+    };
+
+    let planEligibleBaseline = 0;
     for (const resId of spRec.affectedResourceIds) {
       const state = resourceStates.get(resId);
-      if (state) {
-        planEligibleBaseline += state.remainingCost;
-        if (state.appliedSavings > 0) {
-          hadPriorArchitecturalReductions = true;
-        }
-      } else {
-        const knownCost = costLookup.get(resId);
-        const resCost = knownCost !== undefined ? knownCost : equalShareCost;
-        planEligibleBaseline += resCost;
+      if (state && state.appliedSavings > 0) {
+        hadPriorArchitecturalReductions = true;
       }
+      planEligibleBaseline += getResEligibleCost(resId);
     }
 
     planEligibleBaseline = Math.round(planEligibleBaseline * 100) / 100;
@@ -1488,11 +1609,17 @@ export function calculateAchievableSavings(
     const nominalSavings = Math.round(planEligibleBaseline * (effectiveDiscountPct / 100) * 100) / 100;
     const planSavings = Math.min(planEligibleBaseline, nominalSavings);
 
+    const spAllocations = allocateSpSavingsProportionally(
+      planSavings,
+      spRec.affectedResourceIds,
+      getResEligibleCost,
+    );
+
     for (const resId of spRec.affectedResourceIds) {
       committedResources.set(resId, spRec.title);
       const state = resourceStates.get(resId);
       if (state) {
-        const share = planSavings / resourceCount;
+        const share = spAllocations.get(resId) || 0;
         state.remainingCost = Math.max(0, Math.round((state.remainingCost - share) * 100) / 100);
       }
     }
