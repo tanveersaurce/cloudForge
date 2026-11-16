@@ -508,7 +508,11 @@ export class PricingService {
         {} as Record<string, unknown>,
       );
 
-      appliedIds.push(...applicableRecs.map((r) => r.recommendationId));
+      for (const rec of applicableRecs) {
+        if (!appliedIds.includes(rec.recommendationId)) {
+          appliedIds.push(rec.recommendationId);
+        }
+      }
 
       return {
         ...node,

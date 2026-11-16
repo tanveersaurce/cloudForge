@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getPriceRate, REGION_PRICE_MULTIPLIERS } from './data/awsPricingCatalog.js';
 import { CostCalculator } from './engine/costCalculator.js';
 import { CostOptimizationEngine } from './engine/optimizationEngine.js';
@@ -2319,6 +2319,194 @@ describe('AWS Cost Estimation Engine & Intelligent Optimization (Phase 08)', () 
         expect(backendComp.combinedAchievableSavings).toBe(frontendComp.combinedAchievableSavings);
         expect(backendComp.overlapNotes).toEqual(frontendComp.overlapNotes);
       });
+    });
+  });
+
+  describe('Apply All Optimization (Phase 09)', () => {
+    function makeRecommendation(overrides: Partial<any> = {}): any {
+      return {
+        recommendationId: 'REC-1',
+        title: 'Test Recommendation',
+        category: 'compute',
+        priority: 'high',
+        affectedResourceIds: ['ec2-1'],
+        currentConfiguration: { instance_type: 't3.micro' },
+        proposedConfiguration: { instance_type: 't4g.micro' },
+        explanation: 'Test',
+        estimatedCurrentCost: 100.0,
+        estimatedOptimizedCost: 80.0,
+        estimatedMonthlySavings: 20.0,
+        savingsPercentage: 20,
+        currency: 'USD',
+        performanceImpact: 'neutral',
+        securityImpact: 'neutral',
+        availabilityImpact: 'neutral',
+        implementationEffort: 'low',
+        confidenceLevel: 'high',
+        requiredAssumptions: [],
+        documentationReferences: [],
+        status: 'pending',
+        ...overrides,
+      };
+    }
+
+    function mockCalculateCost(recs: any[]) {
+      return vi.spyOn(PricingService, 'calculateCost').mockResolvedValue({
+        architectureId: 'arch-1',
+        region: 'us-east-1',
+        currency: 'USD',
+        totalEstimatedMonthly: 100.0,
+        totalEstimatedHourly: 0.14,
+        totalEstimatedAnnual: 1200.0,
+        assumptions: getDefaultAssumptions(),
+        serviceBreakdown: [],
+        resourceItems: [],
+        missingAssumptions: [],
+        potentialMonthlySavings: recs.reduce((sum, r) => sum + r.estimatedMonthlySavings, 0),
+        recommendations: recs,
+        calculatedAt: new Date().toISOString(),
+      } as any);
+    }
+
+    beforeEach(() => {
+      mockArchitectures.push({
+        id: 'arch-1',
+        userId: 'user-1',
+        name: 'Test Arch',
+        description: null,
+        region: 'us-east-1',
+        status: 'draft',
+        resourceCount: 2,
+        nodes: [
+          {
+            id: 'ec2-1',
+            type: 'awsResource',
+            data: {
+              resourceType: 'aws_instance',
+              label: 'EC2 1',
+              metadata: { instance_type: 't3.micro', ami: 'ami-0c55b159cbfafe1f0' },
+            },
+          },
+          {
+            id: 'ec2-2',
+            type: 'awsResource',
+            data: {
+              resourceType: 'aws_instance',
+              label: 'EC2 2',
+              metadata: { instance_type: 't3.micro', ami: 'ami-0c55b159cbfafe1f0' },
+            },
+          },
+        ],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+    });
+
+    afterEach(() => {
+      mockArchitectures.length = 0;
+      vi.restoreAllMocks();
+    });
+
+    it('applies multiple non-conflicting recommendations', async () => {
+      const recs = [
+        makeRecommendation({ recommendationId: 'REC-1', affectedResourceIds: ['ec2-1'], proposedConfiguration: { instance_type: 't4g.micro' } }),
+        makeRecommendation({ recommendationId: 'REC-2', affectedResourceIds: ['ec2-2'], proposedConfiguration: { volume_type: 'gp3' } }),
+      ];
+      mockCalculateCost(recs);
+
+      const result = await PricingService.applyAllOptimizations('arch-1', 'user-1');
+
+      expect(result.summary.applied).toHaveLength(2);
+      expect(result.summary.conflicting).toHaveLength(0);
+      expect(result.summary.failed).toHaveLength(0);
+      expect(result.summary.skipped).toHaveLength(0);
+      expect(mockPrisma.architecture.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('detects same-key conflicting recommendations', async () => {
+      const recs = [
+        makeRecommendation({ recommendationId: 'REC-1', affectedResourceIds: ['ec2-1'], proposedConfiguration: { instance_type: 't4g.micro' } }),
+        makeRecommendation({ recommendationId: 'REC-2', affectedResourceIds: ['ec2-1'], proposedConfiguration: { instance_type: 'c6g.large' } }),
+      ];
+      mockCalculateCost(recs);
+
+      const result = await PricingService.applyAllOptimizations('arch-1', 'user-1');
+
+      expect(result.summary.conflicting).toHaveLength(2);
+      expect(result.summary.applied).toHaveLength(0);
+      expect(result.summary.conflicting[0].conflictingWith).toContain('REC-2');
+      expect(result.summary.conflicting[1].conflictingWith).toContain('REC-1');
+    });
+
+    it('applies different-key non-conflicting recommendations on same resource', async () => {
+      const recs = [
+        makeRecommendation({ recommendationId: 'REC-1', affectedResourceIds: ['ec2-1'], proposedConfiguration: { instance_type: 't4g.micro' } }),
+        makeRecommendation({ recommendationId: 'REC-2', affectedResourceIds: ['ec2-1'], proposedConfiguration: { root_volume_size: 100 } }),
+      ];
+      mockCalculateCost(recs);
+
+      const result = await PricingService.applyAllOptimizations('arch-1', 'user-1');
+
+      expect(result.summary.applied).toHaveLength(2);
+      expect(result.summary.conflicting).toHaveLength(0);
+    });
+
+    it('counts recommendation affecting multiple resources only once', async () => {
+      const recs = [
+        makeRecommendation({ recommendationId: 'REC-1', affectedResourceIds: ['ec2-1', 'ec2-2'], proposedConfiguration: { instance_type: 't4g.micro' } }),
+      ];
+      mockCalculateCost(recs);
+
+      const result = await PricingService.applyAllOptimizations('arch-1', 'user-1');
+
+      expect(result.summary.applied).toHaveLength(1);
+      expect(result.summary.applied[0]).toBe('REC-1');
+    });
+
+    it('handles missing target resource IDs gracefully', async () => {
+      const recs = [
+        makeRecommendation({ recommendationId: 'REC-1', affectedResourceIds: ['nonexistent-resource'], proposedConfiguration: { instance_type: 't4g.micro' } }),
+      ];
+      mockCalculateCost(recs);
+
+      const result = await PricingService.applyAllOptimizations('arch-1', 'user-1');
+
+      // No node matches 'nonexistent-resource', so nothing is applied
+      expect(result.summary.applied).toHaveLength(0);
+    });
+
+    it('returns ownership violation error', async () => {
+      const recs = [makeRecommendation()];
+      mockCalculateCost(recs);
+
+      // Use wrong userId
+      await expect(PricingService.applyAllOptimizations('arch-1', 'user-2')).rejects.toThrow(/access to this architecture/);
+    });
+
+    it('returns unambiguous result when database update fails', async () => {
+      const recs = [makeRecommendation()];
+      mockCalculateCost(recs);
+
+      // Make update fail
+      mockPrisma.architecture.update.mockRejectedValueOnce(new Error('DB connection lost'));
+
+      const result = await PricingService.applyAllOptimizations('arch-1', 'user-1');
+
+      expect(result.summary.failed).toHaveLength(1);
+      expect(result.summary.applied).toHaveLength(0);
+    });
+
+    it('handles empty recommendations list', async () => {
+      mockCalculateCost([]);
+
+      const result = await PricingService.applyAllOptimizations('arch-1', 'user-1');
+
+      expect(result.summary.applied).toHaveLength(0);
+      expect(result.summary.skipped).toHaveLength(0);
+      expect(result.summary.conflicting).toHaveLength(0);
+      expect(result.summary.failed).toHaveLength(0);
     });
   });
 });

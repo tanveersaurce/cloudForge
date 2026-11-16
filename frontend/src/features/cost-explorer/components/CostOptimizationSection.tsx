@@ -1,11 +1,14 @@
 import React, { useState } from 'react';
 import {
   ArrowRight,
+  AlertCircle,
   CheckCircle,
   ChevronDown,
   ChevronUp,
   ExternalLink,
+  Minus,
   Shield,
+  ShieldAlert,
   Sparkles,
   Zap,
 } from 'lucide-react';
@@ -14,7 +17,17 @@ import type { CostOptimizationRecommendation } from '../types/pricing.types';
 interface CostOptimizationSectionProps {
   recommendations: CostOptimizationRecommendation[];
   onApply: (recommendationId: string) => Promise<void>;
-  onApplyAll?: () => Promise<void>;
+  onApplyAll?: () => Promise<{
+    applied: string[];
+    skipped: string[];
+    conflicting: Array<{
+      recommendationId: string;
+      title: string;
+      reason: string;
+      conflictingWith: string[];
+    }>;
+    failed: string[];
+  }>;
 }
 
 export const CostOptimizationSection: React.FC<CostOptimizationSectionProps> = ({
@@ -26,6 +39,17 @@ export const CostOptimizationSection: React.FC<CostOptimizationSectionProps> = (
   const [applyingAll, setApplyingAll] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [appliedIds, setAppliedIds] = useState<string[]>([]);
+  const [applyAllResult, setApplyAllResult] = useState<{
+    applied: string[];
+    skipped: string[];
+    conflicting: Array<{
+      recommendationId: string;
+      title: string;
+      reason: string;
+      conflictingWith: string[];
+    }>;
+    failed: string[];
+  } | null>(null);
 
   const handleApplyClick = async (recId: string) => {
     setApplyingId(recId);
@@ -39,11 +63,15 @@ export const CostOptimizationSection: React.FC<CostOptimizationSectionProps> = (
 
   const handleApplyAllClick = async () => {
     setApplyingAll(true);
+    setApplyAllResult(null);
     try {
-      await onApplyAll?.();
-      setAppliedIds(
-        recommendations.map((r) => r.recommendationId),
-      );
+      const result = await onApplyAll?.();
+      if (result) {
+        // Deduplicate and only mark recommendations the backend actually applied
+        const next = [...new Set([...appliedIds, ...result.applied])];
+        setAppliedIds(next);
+        setApplyAllResult(result);
+      }
     } finally {
       setApplyingAll(false);
     }
@@ -106,11 +134,108 @@ export const CostOptimizationSection: React.FC<CostOptimizationSectionProps> = (
         </div>
       </div>
 
+      {applyAllResult && (
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 p-4 rounded-xl border border-slate-800 bg-slate-900/40">
+          <div className="p-3 rounded-md bg-emerald-500/10 border border-emerald-500/20">
+            <div className="text-[10px] uppercase font-bold text-emerald-300 mb-1">Applied</div>
+            <div className="text-sm font-semibold text-slate-100">{applyAllResult.applied.length}</div>
+          </div>
+          <div className="p-3 rounded-md bg-amber-500/10 border border-amber-500/20">
+            <div className="text-[10px] uppercase font-bold text-amber-300 mb-1">Skipped</div>
+            <div className="text-sm font-semibold text-slate-100">{applyAllResult.skipped.length}</div>
+          </div>
+          <div className="p-3 rounded-md bg-rose-500/10 border border-rose-500/20">
+            <div className="text-[10px] uppercase font-bold text-rose-300 mb-1">Conflicting</div>
+            <div className="text-sm font-semibold text-slate-100">{applyAllResult.conflicting.length}</div>
+          </div>
+          <div className="p-3 rounded-md bg-slate-500/10 border border-slate-700/60">
+            <div className="text-[10px] uppercase font-bold text-slate-400 mb-1">Failed</div>
+            <div className="text-sm font-semibold text-slate-100">{applyAllResult.failed.length}</div>
+          </div>
+        </div>
+      )}
+
+      {applyAllResult && (
+        <div className="mt-4">
+          {applyAllResult.conflicting.length > 0 && (
+            <div className="p-3 rounded-md bg-rose-500/10 border border-rose-500/20 mb-3">
+              <div className="flex items-center gap-2 mb-2">
+                <ShieldAlert className="w-4 h-4 text-rose-400" />
+                <h4 className="text-sm font-semibold text-rose-300">Conflicting Recommendations</h4>
+              </div>
+              <ul className="text-xs text-slate-300 space-y-1">
+                {applyAllResult.conflicting.map((c) => (
+                  <li key={c.recommendationId} className="flex items-center gap-2">
+                    <span className="text-rose-400">{c.title}</span>
+                    <span className="text-slate-500">— {c.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {applyAllResult.skipped.length > 0 && (
+            <div className="p-3 rounded-md bg-amber-500/10 border border-amber-500/20 mb-3">
+              <div className="flex items-center gap-2 mb-2">
+                <Minus className="w-4 h-4 text-amber-400" />
+                <h4 className="text-sm font-semibold text-amber-300">Skipped Recommendations</h4>
+              </div>
+              <ul className="text-xs text-slate-300 space-y-1">
+                {applyAllResult.skipped.map((id) => {
+                  const rec = recommendations.find((r) => r.recommendationId === id);
+                  return (
+                    <li key={id} className="text-amber-300">
+                      {rec?.title || id}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+          {applyAllResult.failed.length > 0 && (
+            <div className="p-3 rounded-md bg-slate-500/10 border border-slate-700/60">
+              <div className="flex items-center gap-2 mb-2">
+                <AlertCircle className="w-4 h-4 text-slate-400" />
+                <h4 className="text-sm font-semibold text-slate-300">Failed Recommendations</h4>
+              </div>
+              <ul className="text-xs text-slate-300 space-y-1">
+                {applyAllResult.failed.map((id) => {
+                  const rec = recommendations.find((r) => r.recommendationId === id);
+                  return (
+                    <li key={id} className="text-slate-400">
+                      {rec?.title || id}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-3.5">
         {recommendations.map((rec) => {
           const isApplied = appliedIds.includes(rec.recommendationId);
           const isExpanded = expandedId === rec.recommendationId;
           const isApplying = applyingId === rec.recommendationId;
+
+          // Per-recommendation apply-all status
+          const applyAllStatus =
+            applyAllResult?.conflicting.find((c) => c.recommendationId === rec.recommendationId)
+              ? 'conflicting'
+              : applyAllResult?.skipped.includes(rec.recommendationId)
+                ? 'skipped'
+                : applyAllResult?.failed.includes(rec.recommendationId)
+                  ? 'failed'
+                  : null;
+
+          const statusConfig = {
+            applied: { label: 'Applied', color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/30', icon: <CheckCircle className="w-3.5 h-3.5" /> },
+            conflicting: { label: 'Conflicting', color: 'text-rose-400', bg: 'bg-rose-500/10', border: 'border-rose-500/30', icon: <ShieldAlert className="w-3.5 h-3.5" /> },
+            skipped: { label: 'Skipped', color: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/30', icon: <Minus className="w-3.5 h-3.5" /> },
+            failed: { label: 'Failed', color: 'text-slate-400', bg: 'bg-slate-500/10', border: 'border-slate-700/60', icon: <AlertCircle className="w-3.5 h-3.5" /> },
+          } as const;
+
+          const status = applyAllStatus ?? (isApplied ? 'applied' : null);
 
           return (
             <div
@@ -134,6 +259,13 @@ export const CostOptimizationSection: React.FC<CostOptimizationSectionProps> = (
                     <span className="text-[10px] uppercase font-semibold text-slate-500">
                       {rec.savingsPercentage}% Reduction
                     </span>
+                    {status && (
+                      <span
+                        className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ${statusConfig[status].border} ${statusConfig[status].bg} ${statusConfig[status].color}`}
+                      >
+                        {statusConfig[status].icon} {statusConfig[status].label}
+                      </span>
+                    )}
                   </div>
                   <h4 className="text-sm font-semibold text-slate-100">{rec.title}</h4>
                 </div>

@@ -316,6 +316,21 @@ export class TerraformGenerator {
       byType.set(node.resourceType, list);
     }
 
+    // Pre-compute IAM role names so Lambda can reference them correctly.
+    // IAM role blocks are generated later (section 12), but names must be
+    // stable and unique across the whole architecture.
+    const iamRolesPre = byType.get('aws_iam_role') ?? [];
+    const iamRefs = new Map<string, string>(); // nodeId -> terraform resource name
+    for (const role of iamRolesPre) {
+      const name = uniqueResourceName(
+        usedNames,
+        role.label,
+        'aws_iam_role',
+        role.id,
+      );
+      iamRefs.set(role.id, name);
+    }
+
     // 1. VPCs
     const vpcs = byType.get('aws_vpc') ?? [];
     const vpcRefs = new Map<string, string>(); // nodeId -> terraform resource name
@@ -805,16 +820,31 @@ export class TerraformGenerator {
       const memorySize = Number(lambda.metadata?.memory_size || 128);
       const timeout = Number(lambda.metadata?.timeout || 30);
 
-      // Find IAM role for lambda via edges
+      // Find IAM role for lambda via edges.
+      // Only follow 'accesses' edges where the Lambda is the source (it accesses the role).
       let lambdaRoleRef = 'var.lambda_role_arn';
       for (const edge of edges) {
-        if (edge.target === lambda.id && edge.relationshipType === 'accesses') {
-          const roleNode = nodeMap.get(edge.source);
-          if (roleNode?.resourceType === 'aws_iam_role') {
-            lambdaRoleRef = `aws_iam_role.${safeResourceName(roleNode.label, 'aws_iam_role', roleNode.id)}.arn`;
+        if (
+          edge.source === lambda.id &&
+          edge.target !== lambda.id &&
+          edge.relationshipType === 'accesses' &&
+          (edge.direction === 'source-to-target' || edge.direction === 'bidirectional')
+        ) {
+          const roleNode = nodeMap.get(edge.target);
+          if (roleNode?.resourceType === 'aws_iam_role' && iamRefs.has(edge.target)) {
+            lambdaRoleRef = `aws_iam_role.${iamRefs.get(edge.target)}.arn`;
             break;
           }
         }
+      }
+
+      if (lambdaRoleRef === 'var.lambda_role_arn' && iamRolesPre.length > 0) {
+        issues.push({
+          nodeId: lambda.id,
+          resourceType: 'aws_lambda_function',
+          missing: 'IAM role (Lambda must access an IAM role via an "accesses" edge)',
+          severity: 'warning',
+        });
       }
 
       files.push({
@@ -858,7 +888,12 @@ export class TerraformGenerator {
       const blocks: string[] = [];
       const lbSubnets: string[] = [];
       for (const edge of edges) {
-        if (edge.target === lb.id && edge.relationshipType === 'contains') {
+        // Subnet contains LB: edge.source = subnet, edge.target = lb, relationshipType = 'contains'
+        if (
+          edge.target === lb.id &&
+          edge.relationshipType === 'contains' &&
+          (edge.direction === 'source-to-target' || edge.direction === 'bidirectional')
+        ) {
           const subnetNode = nodeMap.get(edge.source);
           if (subnetNode?.resourceType === 'aws_subnet' && subnetRefs.has(edge.source)) {
             lbSubnets.push(`aws_subnet.${subnetRefs.get(edge.source)}.id`);
@@ -873,17 +908,34 @@ export class TerraformGenerator {
 
       const lbSgs: string[] = [];
       for (const edge of edges) {
-        if (edge.target === lb.id && edge.relationshipType === 'accesses') {
-          const sgNode = nodeMap.get(edge.source);
-          if (sgNode?.resourceType === 'aws_security_group' && sgRefs.has(edge.source)) {
-            lbSgs.push(`aws_security_group.${sgRefs.get(edge.source)}.id`);
-          }
+        // LB uses SG: edge.source = lb, edge.target = sg, relationshipType = 'accesses'
+        // OR SG is attached to LB: edge.source = sg, edge.target = lb, relationshipType = 'accesses'
+        // Accept either direction but validate the endpoint types.
+        if (edge.relationshipType !== 'accesses') continue;
+        const isLbSource = edge.source === lb.id;
+        const isLbTarget = edge.target === lb.id;
+        if (!isLbSource && !isLbTarget) continue;
+        if (edge.direction !== 'source-to-target' && edge.direction !== 'bidirectional') continue;
+
+        const otherNodeId = isLbSource ? edge.target : edge.source;
+        const sgNode = nodeMap.get(otherNodeId);
+        if (sgNode?.resourceType === 'aws_security_group' && sgRefs.has(otherNodeId)) {
+          lbSgs.push(`aws_security_group.${sgRefs.get(otherNodeId)}.id`);
         }
       }
       if (lbSgs.length > 0) {
         blocks.push(`  security_groups = [${lbSgs.join(', ')}]`);
       } else if (securityGroups.length > 0) {
-        blocks.push(`  security_groups = [aws_security_group.default.id]  // TODO: reference your security group`);
+        blocks.push(`  security_groups = var.security_group_ids  // TODO: specify ALB security groups`);
+      }
+
+      if (lbSubnets.length === 0 && subnets.length === 0) {
+        issues.push({
+          nodeId: lb.id,
+          resourceType: 'aws_lb',
+          missing: 'Subnets (ALB must be placed in at least one subnet)',
+          severity: 'error',
+        });
       }
 
       files.push({
@@ -901,6 +953,10 @@ export class TerraformGenerator {
           blocks,
         ),
       });
+    }
+
+    if (lbs.length > 0) {
+      variablesContent += hclVariable('security_group_ids', 'list(string)', '[]');
     }
 
     // 12. IAM Roles
