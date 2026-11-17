@@ -326,7 +326,8 @@ export function validateGraphStructure(
     for (const rule of rules) {
       if (rule.dependencyKind !== 'hard-dependency') continue;
 
-      const satisfied = edges.some((edge) => {
+      // Check direct edges
+      let satisfied = edges.some((edge) => {
         const normalized = normalizeEdgeData(edge.data);
         if (!rule.acceptedRelationships.includes(normalized.relationshipType as never)) {
           return false;
@@ -338,7 +339,10 @@ export function validateGraphStructure(
             ? rule.requiredTargetTypes.includes(getNormalizedAwsResourceType(target))
             : false;
         }
-        if (edge.target === node.id && normalized.relationshipType === 'contains') {
+        if (
+          edge.target === node.id &&
+          (normalized.relationshipType === 'contains' || normalized.relationshipType === 'attached-to')
+        ) {
           const source = nodeMap.get(edge.source);
           return source
             ? rule.requiredTargetTypes.includes(getNormalizedAwsResourceType(source))
@@ -346,6 +350,44 @@ export function validateGraphStructure(
         }
         return false;
       });
+
+      // Also check parent hierarchy (React Flow parentId ancestry)
+      if (!satisfied && node.parentId) {
+        let currentParentId: string | null | undefined = node.parentId;
+        const visitedParents = new Set<string>();
+        while (currentParentId && !visitedParents.has(currentParentId)) {
+          visitedParents.add(currentParentId);
+          const parentNode = nodeMap.get(currentParentId);
+          if (!parentNode) break;
+          if (rule.requiredTargetTypes.includes(getNormalizedAwsResourceType(parentNode))) {
+            satisfied = true;
+            break;
+          }
+          currentParentId = parentNode.parentId;
+        }
+      }
+
+      // Also check if enclosing parent container has an edge to the required target type (e.g. Subnet in AZ -> AZ in VPC)
+      if (!satisfied && node.parentId) {
+        const parentNode = nodeMap.get(node.parentId);
+        if (parentNode) {
+          satisfied = edges.some((edge) => {
+            const normalized = normalizeEdgeData(edge.data);
+            if (edge.target === parentNode.id && normalized.relationshipType === 'contains') {
+              const src = nodeMap.get(edge.source);
+              return src ? rule.requiredTargetTypes.includes(getNormalizedAwsResourceType(src)) : false;
+            }
+            if (
+              edge.source === parentNode.id &&
+              (normalized.relationshipType === 'attached-to' || normalized.relationshipType === 'depends-on')
+            ) {
+              const tgt = nodeMap.get(edge.target);
+              return tgt ? rule.requiredTargetTypes.includes(getNormalizedAwsResourceType(tgt)) : false;
+            }
+            return false;
+          });
+        }
+      }
 
       if (!satisfied) {
         const issue: MissingDependencyIssue = {

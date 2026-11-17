@@ -467,5 +467,52 @@ describe('Terraform Generator', () => {
       const errors = issues.filter((i) => i.severity === 'error');
       expect(errors.some((e) => e.missing.toLowerCase().includes('circular'))).toBe(true);
     });
+
+    it('filters out boundary container nodes and normalizes template types', () => {
+      const nodes: TestNode[] = [
+        { id: 'b1', resourceType: 'aws-cloud', label: 'AWS Cloud', metadata: { isBoundary: true } },
+        { id: 'b2', resourceType: 'region', label: 'us-east-1', metadata: { isBoundary: true } },
+        { id: 'b3', resourceType: 'aws_availability_zone', label: 'us-east-1a', metadata: { isBoundary: true } },
+        { id: 'v1', resourceType: 'vpc', label: 'App VPC', metadata: { cidr_block: '10.0.0.0/16' } },
+        { id: 's1', resourceType: 'subnet', label: 'Public Subnet', metadata: { cidr_block: '10.0.1.0/24' } },
+        { id: 'nat1', resourceType: 'nat-gateway', label: 'Public NAT', metadata: {} },
+        { id: 'q1', resourceType: 'sqs-queue', label: 'App Queue', metadata: {} },
+        { id: 'cf1', resourceType: 'cloudfront', label: 'App CDN', metadata: {} },
+        { id: 'rds1', resourceType: 'rds-instance', label: 'Main RDS', metadata: {} },
+        { id: 'ec21', resourceType: 'ec2-instance', label: 'App EC2', metadata: {} },
+        { id: 'cert1', resourceType: 'acm', label: 'Wildcard Cert', metadata: {} },
+      ];
+      const edges: TestEdge[] = [
+        { id: 'e1', source: 'b1', target: 'b2', relationshipType: 'contains', direction: 'source-to-target' },
+        { id: 'e2', source: 'b2', target: 'v1', relationshipType: 'contains', direction: 'source-to-target' },
+        { id: 'e3', source: 'v1', target: 'b3', relationshipType: 'contains', direction: 'source-to-target' },
+        { id: 'e4', source: 'b3', target: 's1', relationshipType: 'contains', direction: 'source-to-target' },
+        { id: 'e5', source: 's1', target: 'nat1', relationshipType: 'contains', direction: 'source-to-target' },
+        { id: 'e6', source: 's1', target: 'rds1', relationshipType: 'contains', direction: 'source-to-target' },
+        { id: 'e7', source: 's1', target: 'ec21', relationshipType: 'contains', direction: 'source-to-target' },
+      ];
+
+      const { files, issues } = TerraformGenerator.generate('Template Test', 'us-east-1', nodes, edges);
+      const errors = issues.filter((i) => i.severity === 'error');
+
+      // No errors - boundaries excluded, types normalized to aws_*, and SQS/CloudFront/RDS generated
+      expect(errors).toHaveLength(0);
+
+      // Boundaries should not have TF resource blocks
+      const allHcl = files.map((f) => f.content).join('\n');
+      expect(allHcl).not.toContain('resource "aws_cloud"');
+      expect(allHcl).not.toContain('resource "region"');
+      expect(allHcl).not.toContain('resource "aws_availability_zone"');
+
+      // Concrete resources must exist
+      expect(allHcl).toContain('resource "aws_vpc"');
+      expect(allHcl).toContain('resource "aws_subnet"');
+      expect(allHcl).toContain('resource "aws_nat_gateway"');
+      expect(allHcl).toContain('resource "aws_sqs_queue"');
+      expect(allHcl).toContain('resource "aws_cloudfront_distribution"');
+      expect(allHcl).toContain('resource "aws_db_instance"');
+      expect(allHcl).toContain('resource "aws_instance"');
+      expect(allHcl).toContain('resource "aws_acm_certificate"');
+    });
   });
 });

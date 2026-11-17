@@ -111,6 +111,83 @@ function safeResourceName(label?: string, resourceType?: string, id?: string): s
   return base || `resource_${id?.slice(-6) || 'unk'}`;
 }
 
+export const BOUNDARY_CONTAINER_TYPES = new Set([
+  'aws_cloud',
+  'aws_region',
+  'aws_availability_zone',
+  'aws_resource_group',
+]);
+
+export function normalizeResourceType(raw: string): string {
+  const trimmed = (raw || '').toLowerCase().trim();
+  const normalized = trimmed
+    .replace(/^aws[_-]/, '')
+    .replace(/^amazon[_-]/, '')
+    .replace(/[- ]/g, '_');
+
+  if (normalized === 'cloud' || normalized === 'aws_cloud') return 'aws_cloud';
+  if (normalized === 'region' || normalized === 'aws_region') return 'aws_region';
+  if (normalized === 'availability_zone' || normalized === 'az') return 'aws_availability_zone';
+  if (normalized === 'vpc') return 'aws_vpc';
+  if (
+    normalized === 'subnet' ||
+    normalized === 'public_subnet' ||
+    normalized === 'private_subnet' ||
+    normalized === 'isolated_subnet'
+  )
+    return 'aws_subnet';
+  if (normalized === 'ec2' || normalized === 'instance' || normalized === 'ec2_instance') return 'aws_instance';
+  if (
+    normalized === 'rds' ||
+    normalized === 'db_instance' ||
+    normalized === 'rds_instance' ||
+    normalized === 'database'
+  )
+    return 'aws_db_instance';
+  if (normalized === 's3' || normalized === 's3_bucket' || normalized === 'bucket') return 'aws_s3_bucket';
+  if (normalized === 'lambda' || normalized === 'lambda_function' || normalized === 'function') return 'aws_lambda_function';
+  if (normalized === 'iam' || normalized === 'iam_role' || normalized === 'role') return 'aws_iam_role';
+  if (normalized === 'kms' || normalized === 'kms_key' || normalized === 'key') return 'aws_kms_key';
+  if (normalized === 'sqs' || normalized === 'sqs_queue' || normalized === 'queue') return 'aws_sqs_queue';
+  if (normalized === 'sns' || normalized === 'sns_topic' || normalized === 'topic') return 'aws_sns_topic';
+  if (normalized === 'dynamodb' || normalized === 'dynamodb_table' || normalized === 'dynamo_table' || normalized === 'table') return 'aws_dynamodb_table';
+  if (
+    normalized === 'alb' ||
+    normalized === 'elb' ||
+    normalized === 'load_balancer' ||
+    normalized === 'application_load_balancer'
+  )
+    return 'aws_lb';
+  if (normalized === 'nlb' || normalized === 'network_load_balancer') return 'aws_nlb';
+  if (normalized === 'nat' || normalized === 'nat_gateway') return 'aws_nat_gateway';
+  if (normalized === 'igw' || normalized === 'internet_gateway') return 'aws_internet_gateway';
+  if (normalized === 'route_table') return 'aws_route_table';
+  if (normalized === 'security_group') return 'aws_security_group';
+  if (normalized === 'cloudfront' || normalized === 'cloudfront_distribution' || normalized === 'cdn') return 'aws_cloudfront_distribution';
+  if (
+    normalized === 'api_gateway' ||
+    normalized === 'apigateway' ||
+    normalized === 'api_gateway_rest_api' ||
+    normalized === 'rest_api' ||
+    normalized === 'api'
+  )
+    return 'aws_api_gateway_rest_api';
+  if (normalized === 'ecs_cluster' || normalized === 'cluster') return 'aws_ecs_cluster';
+  if (normalized === 'ecs_service' || normalized === 'service') return 'aws_ecs_service';
+  if (normalized === 'ecs_task' || normalized === 'task') return 'aws_ecs_task';
+  if (normalized === 'elasticache' || normalized === 'elasticache_cluster' || normalized === 'redis' || normalized === 'memcached')
+    return 'aws_elasticache_cluster';
+  if (normalized === 'cloudwatch' || normalized === 'cloudwatch_metric_alarm' || normalized === 'alarm') return 'aws_cloudwatch_metric_alarm';
+  if (normalized === 'route53' || normalized === 'route53_zone' || normalized === 'dns') return 'aws_route53_zone';
+  if (normalized === 'secrets_manager' || normalized === 'secretsmanager_secret' || normalized === 'secretsmanager') return 'aws_secretsmanager_secret';
+  if (normalized === 'waf' || normalized === 'wafv2_web_acl' || normalized === 'web_acl') return 'aws_wafv2_web_acl';
+  if (normalized === 'bedrock' || normalized === 'bedrock_agent') return 'aws_bedrock_agent';
+  if (normalized === 'mediaconvert' || normalized === 'media_convert') return 'aws_media_convert';
+  if (normalized === 'acm' || normalized === 'acm_certificate' || normalized === 'certificate') return 'aws_acm_certificate';
+
+  return trimmed;
+}
+
 function uniqueResourceName(
   usedNames: Set<string>,
   label?: string,
@@ -464,12 +541,48 @@ export class TerraformGenerator {
   ): { files: TerraformFile[]; issues: DependencyIssue[] } {
     const files: TerraformFile[] = [];
     const usedNames = new Set<string>();
-    const issues = collectDependencyIssues(
-      new Map(nodes.map((n) => [n.id, n])),
-      edges,
-    );
 
-    const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+    // Normalize all nodes and partition out visual boundary containers.
+    // Boundary containers (aws_cloud, aws_region, aws_availability_zone, aws_resource_group,
+    // or metadata.isBoundary===true) are visual layout scopes, not deployable Terraform resources.
+    const normalizedNodes: TerraformNodeInput[] = [];
+    const allNormalizedNodeMap = new Map<string, TerraformNodeInput>();
+
+    for (const node of nodes) {
+      const normType = normalizeResourceType(node.resourceType);
+      const isBoundary =
+        BOUNDARY_CONTAINER_TYPES.has(normType) ||
+        (node.metadata?.isBoundary === true && !['aws_vpc', 'aws_subnet'].includes(normType));
+
+      const normalizedNode = {
+        ...node,
+        resourceType: normType,
+      };
+      allNormalizedNodeMap.set(node.id, normalizedNode);
+
+      if (!isBoundary) {
+        normalizedNodes.push(normalizedNode);
+      }
+    }
+
+    const issues = collectDependencyIssues(
+      allNormalizedNodeMap,
+      edges,
+    ).filter((issue) => {
+      // Keep architecture-level issues (e.g. cycle / circular contains)
+      if (issue.nodeId === 'architecture' || issue.resourceType === 'architecture') {
+        return true;
+      }
+      // Don't report dependency issues on filtered-out boundary containers
+      const targetNode = allNormalizedNodeMap.get(issue.nodeId);
+      if (!targetNode) return false;
+      const isBoundary =
+        BOUNDARY_CONTAINER_TYPES.has(targetNode.resourceType) ||
+        (targetNode.metadata?.isBoundary === true && !['aws_vpc', 'aws_subnet'].includes(targetNode.resourceType));
+      return !isBoundary;
+    });
+
+    const nodeMap = allNormalizedNodeMap;
 
     // Provider block
     files.push({
@@ -497,9 +610,9 @@ export class TerraformGenerator {
     // Variables
     let variablesContent = hclVariable('aws_region', 'string', `"${region}"`);
 
-    // Group nodes by type
+    // Group deployable nodes by type
     const byType = new Map<string, TerraformNodeInput[]>();
-    for (const node of nodes) {
+    for (const node of normalizedNodes) {
       const list = byType.get(node.resourceType) ?? [];
       list.push(node);
       byType.set(node.resourceType, list);
@@ -1212,6 +1325,201 @@ export class TerraformGenerator {
       });
     }
 
+    // 14. SQS Queues
+    const sqsQueues = byType.get('aws_sqs_queue') ?? [];
+    for (const queue of sqsQueues) {
+      const name = uniqueResourceName(usedNames, queue.label, 'aws_sqs_queue', queue.id);
+      files.push({
+        filename: `sqs/${name}.tf`,
+        content: hclBlock('aws_sqs_queue', name, {
+          name: (queue.metadata?.name as string) || name,
+          tags: { Name: queue.label || name },
+        }),
+      });
+    }
+
+    // 15. SNS Topics
+    const snsTopics = byType.get('aws_sns_topic') ?? [];
+    for (const topic of snsTopics) {
+      const name = uniqueResourceName(usedNames, topic.label, 'aws_sns_topic', topic.id);
+      files.push({
+        filename: `sns/${name}.tf`,
+        content: hclBlock('aws_sns_topic', name, {
+          name: (topic.metadata?.name as string) || name,
+          tags: { Name: topic.label || name },
+        }),
+      });
+    }
+
+    // 16. CloudFront Distributions
+    const cfDistributions = byType.get('aws_cloudfront_distribution') ?? [];
+    for (const dist of cfDistributions) {
+      const name = uniqueResourceName(usedNames, dist.label, 'aws_cloudfront_distribution', dist.id);
+      files.push({
+        filename: `cloudfront/${name}.tf`,
+        content: hclBlock('aws_cloudfront_distribution', name, {
+          enabled: true,
+          comment: dist.label || name,
+          tags: { Name: dist.label || name },
+        }),
+      });
+    }
+
+    // 17. API Gateway REST APIs
+    const apiGateways = byType.get('aws_api_gateway_rest_api') ?? [];
+    for (const api of apiGateways) {
+      const name = uniqueResourceName(usedNames, api.label, 'aws_api_gateway_rest_api', api.id);
+      files.push({
+        filename: `api_gateway/${name}.tf`,
+        content: hclBlock('aws_api_gateway_rest_api', name, {
+          name: (api.metadata?.name as string) || name,
+          description: api.label || name,
+          tags: { Name: api.label || name },
+        }),
+      });
+    }
+
+    // 18. ECS Clusters & Services
+    const ecsClusters = byType.get('aws_ecs_cluster') ?? [];
+    for (const cluster of ecsClusters) {
+      const name = uniqueResourceName(usedNames, cluster.label, 'aws_ecs_cluster', cluster.id);
+      files.push({
+        filename: `ecs/${name}_cluster.tf`,
+        content: hclBlock('aws_ecs_cluster', name, {
+          name: (cluster.metadata?.name as string) || name,
+          tags: { Name: cluster.label || name },
+        }),
+      });
+    }
+
+    const ecsServices = byType.get('aws_ecs_service') ?? [];
+    for (const service of ecsServices) {
+      const name = uniqueResourceName(usedNames, service.label, 'aws_ecs_service', service.id);
+      files.push({
+        filename: `ecs/${name}.tf`,
+        content: hclBlock('aws_ecs_service', name, {
+          name: (service.metadata?.name as string) || name,
+          desired_count: (service.metadata?.desired_count as number) || 1,
+          tags: { Name: service.label || name },
+        }),
+      });
+    }
+
+    // 19. ElastiCache Clusters
+    const elasticaches = byType.get('aws_elasticache_cluster') ?? [];
+    for (const ec of elasticaches) {
+      const name = uniqueResourceName(usedNames, ec.label, 'aws_elasticache_cluster', ec.id);
+      files.push({
+        filename: `elasticache/${name}.tf`,
+        content: hclBlock('aws_elasticache_cluster', name, {
+          cluster_id: name,
+          engine: (ec.metadata?.engine as string) || 'redis',
+          node_type: (ec.metadata?.node_type as string) || 'cache.t3.micro',
+          num_cache_nodes: 1,
+          tags: { Name: ec.label || name },
+        }),
+      });
+    }
+
+    // 20. CloudWatch Metric Alarms
+    const cwAlarms = byType.get('aws_cloudwatch_metric_alarm') ?? [];
+    for (const alarm of cwAlarms) {
+      const name = uniqueResourceName(usedNames, alarm.label, 'aws_cloudwatch_metric_alarm', alarm.id);
+      files.push({
+        filename: `cloudwatch/${name}.tf`,
+        content: hclBlock('aws_cloudwatch_metric_alarm', name, {
+          alarm_name: (alarm.metadata?.alarm_name as string) || name,
+          comparison_operator: 'GreaterThanOrEqualToThreshold',
+          evaluation_periods: 2,
+          metric_name: 'CPUUtilization',
+          namespace: 'AWS/EC2',
+          period: 120,
+          statistic: 'Average',
+          threshold: 80,
+          tags: { Name: alarm.label || name },
+        }),
+      });
+    }
+
+    // 21. Route53 Zones
+    const r53Zones = byType.get('aws_route53_zone') ?? [];
+    for (const zone of r53Zones) {
+      const name = uniqueResourceName(usedNames, zone.label, 'aws_route53_zone', zone.id);
+      files.push({
+        filename: `route53/${name}.tf`,
+        content: hclBlock('aws_route53_zone', name, {
+          name: (zone.metadata?.name as string) || `${name}.example.com`,
+          tags: { Name: zone.label || name },
+        }),
+      });
+    }
+
+    // 22. Secrets Manager Secrets
+    const smSecrets = byType.get('aws_secretsmanager_secret') ?? [];
+    for (const sec of smSecrets) {
+      const name = uniqueResourceName(usedNames, sec.label, 'aws_secretsmanager_secret', sec.id);
+      files.push({
+        filename: `secrets/${name}.tf`,
+        content: hclBlock('aws_secretsmanager_secret', name, {
+          name: (sec.metadata?.name as string) || name,
+          tags: { Name: sec.label || name },
+        }),
+      });
+    }
+
+    // 23. WAFv2 Web ACL
+    const wafAcls = byType.get('aws_wafv2_web_acl') ?? [];
+    for (const waf of wafAcls) {
+      const name = uniqueResourceName(usedNames, waf.label, 'aws_wafv2_web_acl', waf.id);
+      files.push({
+        filename: `waf/${name}.tf`,
+        content: hclBlock('aws_wafv2_web_acl', name, {
+          name: (waf.metadata?.name as string) || name,
+          scope: 'REGIONAL',
+          tags: { Name: waf.label || name },
+        }),
+      });
+    }
+
+    // 24. Bedrock Agents & MediaConvert
+    const bedrockAgents = byType.get('aws_bedrock_agent') ?? [];
+    for (const agent of bedrockAgents) {
+      const name = uniqueResourceName(usedNames, agent.label, 'aws_bedrock_agent', agent.id);
+      files.push({
+        filename: `bedrock/${name}.tf`,
+        content: hclBlock('aws_bedrockagent_agent', name, {
+          agent_name: (agent.metadata?.name as string) || name,
+          tags: { Name: agent.label || name },
+        }),
+      });
+    }
+
+    const mediaConverts = byType.get('aws_media_convert') ?? [];
+    for (const mc of mediaConverts) {
+      const name = uniqueResourceName(usedNames, mc.label, 'aws_media_convert', mc.id);
+      files.push({
+        filename: `mediaconvert/${name}.tf`,
+        content: hclBlock('aws_media_convert_queue', name, {
+          name: (mc.metadata?.name as string) || name,
+          tags: { Name: mc.label || name },
+        }),
+      });
+    }
+
+    // 25. ACM Certificates
+    const acmCerts = byType.get('aws_acm_certificate') ?? [];
+    for (const cert of acmCerts) {
+      const name = uniqueResourceName(usedNames, cert.label, 'aws_acm_certificate', cert.id);
+      files.push({
+        filename: `acm/${name}.tf`,
+        content: hclBlock('aws_acm_certificate', name, {
+          domain_name: (cert.metadata?.domain_name as string) || 'example.com',
+          validation_method: 'DNS',
+          tags: { Name: cert.label || name },
+        }),
+      });
+    }
+
     // Report unsupported resource types explicitly
     const supportedTypes = new Set([
       'aws_vpc',
@@ -1225,10 +1533,27 @@ export class TerraformGenerator {
       'aws_dynamodb_table',
       'aws_lambda_function',
       'aws_lb',
+      'aws_nlb',
       'aws_iam_role',
       'aws_kms_key',
+      'aws_route_table',
+      'aws_sqs_queue',
+      'aws_sns_topic',
+      'aws_cloudfront_distribution',
+      'aws_api_gateway_rest_api',
+      'aws_ecs_cluster',
+      'aws_ecs_service',
+      'aws_ecs_task',
+      'aws_elasticache_cluster',
+      'aws_cloudwatch_metric_alarm',
+      'aws_route53_zone',
+      'aws_secretsmanager_secret',
+      'aws_wafv2_web_acl',
+      'aws_bedrock_agent',
+      'aws_media_convert',
+      'aws_acm_certificate',
     ]);
-    for (const node of nodes) {
+    for (const node of normalizedNodes) {
       if (!supportedTypes.has(node.resourceType)) {
         issues.push({
           nodeId: node.id,
@@ -1336,7 +1661,10 @@ terraform apply
       id: n.id,
       resourceType: n.data?.resourceType || n.type || 'unknown',
       label: n.data?.label || n.data?.resourceName || n.id,
-      metadata: n.data?.metadata || {},
+      metadata: {
+        ...(n.data?.metadata || {}),
+        isBoundary: n.data?.metadata?.isBoundary ?? n.metadata?.isBoundary ?? (n.type === 'boundary' || n.data?.isBoundary),
+      },
     }));
 
     const edges: TerraformEdgeInput[] = rawEdges.map((e: any) => ({

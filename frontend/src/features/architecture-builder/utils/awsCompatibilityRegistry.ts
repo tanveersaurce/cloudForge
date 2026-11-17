@@ -44,28 +44,153 @@ interface PairRule {
 
 function normalizeResourceType(node: ArchitectureFlowNode): string {
   const raw = (node.data.resourceType || node.data.serviceSlug || '').toLowerCase().trim();
+  const normalized = raw
+    .replace(/^aws[_-]/, '')
+    .replace(/^amazon[_-]/, '')
+    .replace(/[- ]/g, '_');
+
+  if (normalized === 'cloud' || normalized === 'aws_cloud') return 'aws_cloud';
+  if (normalized === 'region' || normalized === 'aws_region') return 'aws_region';
+  if (normalized === 'availability_zone' || normalized === 'az') return 'aws_availability_zone';
+  if (normalized === 'vpc') return 'aws_vpc';
+  if (
+    normalized === 'subnet' ||
+    normalized === 'public_subnet' ||
+    normalized === 'private_subnet' ||
+    normalized === 'isolated_subnet'
+  )
+    return 'aws_subnet';
+  if (normalized === 'ec2' || normalized === 'instance' || normalized === 'ec2_instance') return 'aws_instance';
+  if (
+    normalized === 'rds' ||
+    normalized === 'db_instance' ||
+    normalized === 'rds_instance' ||
+    normalized === 'database'
+  )
+    return 'aws_db_instance';
+  if (normalized === 's3' || normalized === 's3_bucket' || normalized === 'bucket') return 'aws_s3_bucket';
+  if (normalized === 'lambda' || normalized === 'lambda_function' || normalized === 'function') return 'aws_lambda_function';
+  if (normalized === 'iam' || normalized === 'iam_role' || normalized === 'role') return 'aws_iam_role';
+  if (normalized === 'kms' || normalized === 'kms_key' || normalized === 'key') return 'aws_kms_key';
+  if (normalized === 'sqs' || normalized === 'sqs_queue' || normalized === 'queue') return 'aws_sqs_queue';
+  if (normalized === 'sns' || normalized === 'sns_topic' || normalized === 'topic') return 'aws_sns_topic';
+  if (normalized === 'dynamodb' || normalized === 'dynamodb_table' || normalized === 'dynamo_table' || normalized === 'table') return 'aws_dynamodb_table';
+  if (
+    normalized === 'alb' ||
+    normalized === 'elb' ||
+    normalized === 'load_balancer' ||
+    normalized === 'application_load_balancer'
+  )
+    return 'aws_lb';
+  if (normalized === 'nlb' || normalized === 'network_load_balancer') return 'aws_nlb';
+  if (normalized === 'nat' || normalized === 'nat_gateway') return 'aws_nat_gateway';
+  if (normalized === 'igw' || normalized === 'internet_gateway') return 'aws_internet_gateway';
+  if (normalized === 'route_table') return 'aws_route_table';
+  if (normalized === 'security_group') return 'aws_security_group';
+  if (normalized === 'cloudfront' || normalized === 'cloudfront_distribution' || normalized === 'cdn') return 'aws_cloudfront_distribution';
+  if (
+    normalized === 'api_gateway' ||
+    normalized === 'apigateway' ||
+    normalized === 'api_gateway_rest_api' ||
+    normalized === 'rest_api' ||
+    normalized === 'api'
+  )
+    return 'aws_api_gateway_rest_api';
+  if (normalized === 'ecs_cluster' || normalized === 'cluster') return 'aws_ecs_cluster';
+  if (normalized === 'ecs_service' || normalized === 'service') return 'aws_ecs_service';
+  if (normalized === 'ecs_task' || normalized === 'task') return 'aws_ecs_task';
+  if (normalized === 'elasticache' || normalized === 'elasticache_cluster' || normalized === 'redis' || normalized === 'memcached')
+    return 'aws_elasticache_cluster';
+  if (normalized === 'cloudwatch' || normalized === 'cloudwatch_metric_alarm' || normalized === 'alarm') return 'aws_cloudwatch_metric_alarm';
+  if (normalized === 'route53' || normalized === 'route53_zone' || normalized === 'dns') return 'aws_route53_zone';
+  if (normalized === 'secrets_manager' || normalized === 'secretsmanager_secret' || normalized === 'secretsmanager') return 'aws_secretsmanager_secret';
+  if (normalized === 'waf' || normalized === 'wafv2_web_acl' || normalized === 'web_acl') return 'aws_wafv2_web_acl';
+  if (normalized === 'bedrock' || normalized === 'bedrock_agent') return 'aws_bedrock_agent';
+  if (normalized === 'mediaconvert' || normalized === 'media_convert') return 'aws_media_convert';
+  if (normalized === 'acm' || normalized === 'acm_certificate' || normalized === 'certificate') return 'aws_acm_certificate';
   if (raw === 'amazon-vpc' || raw === 'vpc') return 'aws_vpc';
-  if (raw === 'amazon-ec2' || raw === 'ec2') return 'aws_instance';
-  if (raw === 'amazon-rds' || raw === 'rds') return 'aws_db_instance';
-  if (raw === 'amazon-s3' || raw === 's3') return 'aws_s3_bucket';
-  if (raw === 'aws-lambda' || raw === 'lambda') return 'aws_lambda_function';
-  if (raw === 'aws-iam' || raw === 'iam') return 'aws_iam_role';
-  if (raw === 'amazon-sqs' || raw === 'sqs') return 'aws_sqs_queue';
-  if (raw === 'amazon-sns' || raw === 'sns') return 'aws_sns_topic';
-  if (raw === 'amazon-dynamodb' || raw === 'dynamodb') return 'aws_dynamodb_table';
-  if (raw === 'elastic-load-balancing' || raw === 'alb' || raw === 'elb') return 'aws_lb';
-  if (raw === 'amazon-cloudfront' || raw === 'cloudfront') return 'aws_cloudfront_distribution';
-  if (raw === 'amazon-api-gateway' || raw === 'api-gateway') return 'aws_api_gateway_rest_api';
   return raw;
 }
 
-const CONTAINER_RESOURCE_TYPES = new Set(['aws_vpc', 'aws_subnet', 'aws_ecs_cluster']);
+const CONTAINER_RESOURCE_TYPES = new Set([
+  'aws_cloud',
+  'aws_region',
+  'aws_vpc',
+  'aws_availability_zone',
+  'aws_subnet',
+  'aws_ecs_cluster',
+  'aws_resource_group',
+]);
 
 /**
  * Verified AWS resource-pair compatibility rules.
  * Note: These represent application-level architectural relationships, not automated IAM/network provisioning.
  */
 const AWS_PAIR_RULES: PairRule[] = [
+  {
+    sourceTypes: ['aws_cloud'],
+    targetTypes: [
+      'aws_region',
+      'aws_vpc',
+      'aws_s3_bucket',
+      'aws_cloudfront_distribution',
+      'aws_route53_zone',
+      'aws_iam_role',
+    ],
+    compatible: [
+      {
+        relationshipType: 'contains',
+        dependencyKind: 'logical',
+        recommended: true,
+        reason: 'AWS Cloud envelope encloses regional infrastructure and global services.',
+      },
+    ],
+  },
+  {
+    sourceTypes: ['aws_region'],
+    targetTypes: [
+      'aws_vpc',
+      'aws_availability_zone',
+      'aws_s3_bucket',
+      'aws_dynamodb_table',
+      'aws_lambda_function',
+      'aws_api_gateway_rest_api',
+      'aws_cloudwatch_metric_alarm',
+      'aws_internet_gateway',
+    ],
+    compatible: [
+      {
+        relationshipType: 'contains',
+        dependencyKind: 'logical',
+        recommended: true,
+        reason: 'AWS Region encloses regional VPC networks and managed services.',
+      },
+    ],
+  },
+  {
+    sourceTypes: ['aws_vpc'],
+    targetTypes: ['aws_availability_zone', 'aws_nat_gateway', 'aws_internet_gateway', 'aws_lb'],
+    compatible: [
+      {
+        relationshipType: 'contains',
+        dependencyKind: 'logical',
+        recommended: true,
+        reason: 'A VPC contains Availability Zones, Subnets, and regional VPC gateways.',
+      },
+    ],
+  },
+  {
+    sourceTypes: ['aws_availability_zone'],
+    targetTypes: ['aws_subnet', 'aws_instance', 'aws_db_instance', 'aws_nat_gateway', 'aws_lb'],
+    compatible: [
+      {
+        relationshipType: 'contains',
+        dependencyKind: 'logical',
+        recommended: true,
+        reason: 'An Availability Zone encloses subnets and zone-isolated compute/database resources.',
+      },
+    ],
+  },
   {
     sourceTypes: ['aws_vpc'],
     targetTypes: ['aws_subnet'],
@@ -232,7 +357,7 @@ const AWS_PAIR_RULES: PairRule[] = [
   },
   {
     sourceTypes: ['aws_lb', 'aws_cloudfront_distribution', 'aws_api_gateway_rest_api'],
-    targetTypes: ['aws_instance', 'aws_ecs_service', 'aws_lambda_function'],
+    targetTypes: ['aws_instance', 'aws_ecs_service', 'aws_lambda_function', 'aws_s3_bucket'],
     compatible: [
       {
         relationshipType: 'load-balances-to',
@@ -244,6 +369,16 @@ const AWS_PAIR_RULES: PairRule[] = [
         relationshipType: 'sends-traffic-to',
         dependencyKind: 'network-traffic',
         reason: 'Forwards inbound traffic to target compute.',
+      },
+      {
+        relationshipType: 'routes-to',
+        dependencyKind: 'network-traffic',
+        reason: 'Routes inbound API/web requests to target backend compute or service.',
+      },
+      {
+        relationshipType: 'connects-to',
+        dependencyKind: 'logical',
+        reason: 'Connects distribution or API gateway to downstream backend service or origin bucket.',
       },
     ],
   },
@@ -339,6 +474,11 @@ const AWS_PAIR_RULES: PairRule[] = [
         relationshipType: 'accesses',
         dependencyKind: 'security-permission',
         reason: 'Resource accesses S3 bucket objects subject to IAM permissions.',
+      },
+      {
+        relationshipType: 'connects-to',
+        dependencyKind: 'logical',
+        reason: 'Connects distribution or compute workload to target S3 bucket.',
       },
     ],
     disallowed: {
