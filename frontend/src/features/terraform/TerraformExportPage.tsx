@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft,
   Copy,
@@ -16,7 +16,6 @@ import type { TerraformFile, TerraformIssue } from './terraformService';
 
 export const TerraformExportPage: React.FC = () => {
   const { architectureId } = useParams<{ architectureId: string }>();
-  const navigate = useNavigate();
 
   const [files, setFiles] = useState<TerraformFile[] | null>(null);
   const [hcl, setHcl] = useState<string | null>(null);

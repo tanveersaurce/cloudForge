@@ -107,13 +107,13 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
         position: { x: 25, y: 65 },
         data: {
           serviceId: 'svc-amazon-vpc',
-          serviceSlug: 'amazon-vpc',
+          serviceSlug: 'aws-availability-zone',
           serviceName: 'Availability Zone',
           categorySlug: 'networking-content-delivery',
           categoryName: 'Networking',
           iconKey: 'vpc',
           resourceName: 'Availability Zone us-east-1a',
-          resourceType: 'availability-zone',
+          resourceType: 'aws_availability_zone',
           label: 'Availability Zone A',
           description: 'Primary physical availability zone.',
           metadata: {
@@ -1182,8 +1182,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-vpc',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 30, y: 50 },
         data: {
           serviceId: 'svc-amazon-vpc',
@@ -1214,13 +1212,13 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
         position: { x: 25, y: 60 },
         data: {
           serviceId: 'svc-amazon-vpc',
-          serviceSlug: 'amazon-vpc',
+          serviceSlug: 'aws-availability-zone',
           serviceName: 'Availability Zone',
           categorySlug: 'networking-content-delivery',
           categoryName: 'Networking',
           iconKey: 'vpc',
           resourceName: 'Availability Zone us-east-1a',
-          resourceType: 'availability-zone',
+          resourceType: 'aws_availability_zone',
           label: 'Availability Zone A',
           description: 'Primary physical availability zone.',
           metadata: {
@@ -1241,13 +1239,13 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
         position: { x: 580, y: 60 },
         data: {
           serviceId: 'svc-amazon-vpc',
-          serviceSlug: 'amazon-vpc',
+          serviceSlug: 'aws-availability-zone',
           serviceName: 'Availability Zone',
           categorySlug: 'networking-content-delivery',
           categoryName: 'Networking',
           iconKey: 'vpc',
           resourceName: 'Availability Zone us-east-1b',
-          resourceType: 'availability-zone',
+          resourceType: 'aws_availability_zone',
           label: 'Availability Zone B',
           description: 'Secondary physical availability zone.',
           metadata: {
@@ -1485,8 +1483,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-r53',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1190, y: 40 },
         data: {
           serviceId: 'svc-amazon-route-53',
@@ -1506,8 +1502,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-waf',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1290, y: 40 },
         data: {
           serviceId: 'svc-aws-waf',
@@ -1527,8 +1521,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-cf',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1390, y: 40 },
         data: {
           serviceId: 'svc-amazon-cloudfront',
@@ -1551,8 +1543,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-s3-frontend',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1490, y: 40 },
         data: {
           serviceId: 'svc-amazon-s3',
@@ -1577,8 +1567,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-api-gw',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1190, y: 160 },
         data: {
           serviceId: 'svc-amazon-api-gateway',
@@ -1601,8 +1589,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-api-gw-ws',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1290, y: 160 },
         data: {
           serviceId: 'svc-amazon-api-gateway',
@@ -1625,8 +1611,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-alb',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1390, y: 160 },
         data: {
           serviceId: 'svc-elastic-load-balancing',
@@ -1757,8 +1741,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-bedrock',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1190, y: 280 },
         data: {
           serviceId: 'svc-aws-bedrock',
@@ -1778,8 +1760,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-sqs-ai',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1290, y: 280 },
         data: {
           serviceId: 'svc-amazon-sqs',
@@ -1801,8 +1781,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-dynamodb-chat',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1190, y: 400 },
         data: {
           serviceId: 'svc-amazon-dynamodb',
@@ -1849,8 +1827,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-sqs-chat',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1290, y: 400 },
         data: {
           serviceId: 'svc-amazon-sqs',
@@ -1872,8 +1848,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-s3-raw',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1190, y: 520 },
         data: {
           serviceId: 'svc-amazon-s3',
@@ -1897,8 +1871,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-sqs-video',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1290, y: 520 },
         data: {
           serviceId: 'svc-amazon-sqs',
@@ -1918,8 +1890,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-lambda-video',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1190, y: 640 },
         data: {
           serviceId: 'svc-aws-lambda',
@@ -1943,8 +1913,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-mediaconvert',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1290, y: 640 },
         data: {
           serviceId: 'svc-aws-media-convert',
@@ -1964,8 +1932,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-s3-processed',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1190, y: 760 },
         data: {
           serviceId: 'svc-amazon-s3',
@@ -1988,8 +1954,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-cf-video',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1290, y: 760 },
         data: {
           serviceId: 'svc-amazon-cloudfront',
@@ -2040,8 +2004,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-dynamodb-reels',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1190, y: 880 },
         data: {
           serviceId: 'svc-amazon-dynamodb',
@@ -2066,8 +2028,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-iam',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1190, y: 1000 },
         data: {
           serviceId: 'svc-aws-secrets-manager',
@@ -2087,8 +2047,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-secrets',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1290, y: 1000 },
         data: {
           serviceId: 'svc-aws-secrets-manager',
@@ -2108,8 +2066,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
       {
         id: 'node-cw',
         type: 'awsResource',
-        parentId: 'node-region',
-        extent: 'parent',
         position: { x: 1390, y: 1000 },
         data: {
           serviceId: 'svc-amazon-cloudwatch',
@@ -2305,7 +2261,7 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
         target: 'node-s3-frontend',
         type: 'relationship',
         data: {
-          relationshipType: 'accesses',
+          relationshipType: 'connects-to',
           direction: 'source-to-target',
           label: 'Origin Access Control',
         },
@@ -2340,7 +2296,7 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
         target: 'node-ecs-backend-a',
         type: 'relationship',
         data: {
-          relationshipType: 'routes-to',
+          relationshipType: 'connects-to',
           direction: 'source-to-target',
           label: 'REST API',
         },
@@ -2351,7 +2307,7 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
         target: 'node-ecs-backend-b',
         type: 'relationship',
         data: {
-          relationshipType: 'routes-to',
+          relationshipType: 'connects-to',
           direction: 'source-to-target',
           label: 'REST API',
         },
@@ -2362,7 +2318,7 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
         target: 'node-ecs-auth',
         type: 'relationship',
         data: {
-          relationshipType: 'routes-to',
+          relationshipType: 'connects-to',
           direction: 'source-to-target',
           label: 'Auth API',
         },
@@ -2387,30 +2343,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
           relationshipType: 'load-balances-to',
           direction: 'source-to-target',
           label: 'HTTPS/443',
-        },
-      },
-
-      // ===================== NAT EGRESS =====================
-      {
-        id: 'edge-priv-a-nat-a',
-        source: 'node-priv-sub-a',
-        target: 'node-nat-a',
-        type: 'relationship',
-        data: {
-          relationshipType: 'routes-to',
-          direction: 'source-to-target',
-          label: '0.0.0.0/0 Egress',
-        },
-      },
-      {
-        id: 'edge-priv-b-nat-b',
-        source: 'node-priv-sub-b',
-        target: 'node-nat-b',
-        type: 'relationship',
-        data: {
-          relationshipType: 'routes-to',
-          direction: 'source-to-target',
-          label: '0.0.0.0/0 Egress',
         },
       },
 
@@ -2478,7 +2410,7 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
         target: 'node-ecs-backend-a',
         type: 'relationship',
         data: {
-          relationshipType: 'triggers',
+          relationshipType: 'connects-to',
           direction: 'source-to-target',
           label: 'WebSocket Messages',
         },
@@ -2489,7 +2421,7 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
         target: 'node-dynamodb-chat',
         type: 'relationship',
         data: {
-          relationshipType: 'stores-data-in',
+          relationshipType: 'connects-to',
           direction: 'source-to-target',
           label: 'Chat Messages',
         },
@@ -2601,7 +2533,7 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
         target: 'node-dynamodb-reels',
         type: 'relationship',
         data: {
-          relationshipType: 'stores-data-in',
+          relationshipType: 'connects-to',
           direction: 'source-to-target',
           label: 'Reel Metadata',
         },

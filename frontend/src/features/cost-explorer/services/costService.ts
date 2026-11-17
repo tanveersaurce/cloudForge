@@ -69,6 +69,7 @@ export interface ApplyAllResult {
   summary: {
     applied: string[];
     skipped: string[];
+    partialTargets: string[];
     conflicting: Array<{
       recommendationId: string;
       title: string;
@@ -76,6 +77,7 @@ export interface ApplyAllResult {
       conflictingWith: string[];
     }>;
     failed: string[];
+    recalculationFailed: boolean;
   };
 }
 

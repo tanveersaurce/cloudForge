@@ -57,75 +57,100 @@ export function normalizeResourceType(data: {
   resourceName?: string;
   serviceSlug?: string;
 }): string {
-  const rType = (data.resourceType || '').toLowerCase().trim();
-  const rName = (data.resourceName || '').toLowerCase().trim();
-  const slug = (data.serviceSlug || '').toLowerCase().trim();
+  const normalizeStr = (val?: string) =>
+    (val || '')
+      .toLowerCase()
+      .trim()
+      .replace(/^aws[_-]/, '')
+      .replace(/^amazon[_-]/, '')
+      .replace(/[- ]/g, '_');
 
-  // If resourceType is explicitly set to a non-VPC type, honor it
-  if (rType === 'aws_instance' || rType === 'ec2' || rType === 'instance') return 'aws_instance';
-  if (rType === 'aws_db_instance' || rType === 'rds' || rType === 'database') return 'aws_db_instance';
-  if (rType === 'aws_subnet' || rType === 'subnet') return 'aws_subnet';
-  if (rType === 'aws_security_group' || rType === 'security_group' || rType === 'security-group') return 'aws_security_group';
-  if (rType === 'aws_route_table' || rType === 'route_table' || rType === 'route-table') return 'aws_route_table';
-  if (rType === 'aws_internet_gateway' || rType === 'internet_gateway' || rType === 'internet-gateway' || rType === 'igw') return 'aws_internet_gateway';
-  if (rType === 'aws_nat_gateway' || rType === 'nat_gateway' || rType === 'nat-gateway' || rType === 'nat') return 'aws_nat_gateway';
-  if (rType === 'aws_network_acl' || rType === 'network_acl' || rType === 'network-acl' || rType === 'nacl') return 'aws_network_acl';
-  if (rType === 'aws_vpc_endpoint' || rType === 'vpc_endpoint' || rType === 'vpc-endpoint') return 'aws_vpc_endpoint';
-  if (rType === 'aws_lambda_function' || rType === 'lambda' || rType === 'lambda_function') return 'aws_lambda_function';
-  if (rType === 'aws_ecs_cluster' || rType === 'ecs_cluster' || rType === 'ecs-cluster' || rType === 'cluster') return 'aws_ecs_cluster';
-  if (rType === 'aws_ecs_service' || rType === 'ecs_service' || rType === 'ecs-service') return 'aws_ecs_service';
-  if (rType === 'aws_ecs_task' || rType === 'ecs_task' || rType === 'ecs-task') return 'aws_ecs_task';
-  if (rType === 'aws_lb' || rType === 'aws_alb' || rType === 'alb' || rType === 'load_balancer' || rType === 'load-balancer') return 'aws_lb';
-  if (rType === 'aws_nlb' || rType === 'nlb') return 'aws_nlb';
-  if (rType === 'aws_elasticache_cluster' || rType === 'elasticache' || rType === 'redis') return 'aws_elasticache_cluster';
-  if (rType === 'aws_opensearch_domain' || rType === 'opensearch' || rType === 'elasticsearch') return 'aws_opensearch_domain';
-  if (rType === 'aws_redshift_cluster' || rType === 'redshift') return 'aws_redshift_cluster';
-  if (rType === 'aws_s3_bucket' || rType === 's3') return 'aws_s3_bucket';
-  if (rType === 'aws_dynamodb_table' || rType === 'dynamodb') return 'aws_dynamodb_table';
-  if (rType === 'aws_api_gateway_rest_api' || rType === 'apigateway' || rType === 'api-gateway') return 'aws_api_gateway_rest_api';
-  if (rType === 'aws_cloudfront_distribution' || rType === 'cloudfront') return 'aws_cloudfront_distribution';
-  if (rType === 'aws_route53_zone' || rType === 'route53') return 'aws_route53_zone';
-  if (rType === 'aws_sns_topic' || rType === 'sns') return 'aws_sns_topic';
-  if (rType === 'aws_sqs_queue' || rType === 'sqs') return 'aws_sqs_queue';
-  if (rType === 'aws_iam_role' || rType === 'iam' || rType === 'iam-role') return 'aws_iam_role';
-  if (rType === 'aws_kms_key' || rType === 'kms') return 'aws_kms_key';
-  if (rType === 'aws_cloudwatch_metric_alarm' || rType === 'cloudwatch') return 'aws_cloudwatch_metric_alarm';
-  if (rType === 'aws_autoscaling_group' || rType === 'autoscaling' || rType === 'asg') return 'aws_autoscaling_group';
-  if (rType === 'aws_region' || rType === 'region') return 'aws_region';
-  if (rType === 'aws_availability_zone' || rType === 'availability_zone' || rType === 'az') return 'aws_availability_zone';
-  if (rType === 'aws_cloud' || rType === 'cloud') return 'aws_cloud';
-  if (rType === 'aws_resource_group' || rType === 'resource_group' || rType === 'resource-group') return 'aws_resource_group';
+  const rType = normalizeStr(data.resourceType);
+  const rName = normalizeStr(data.resourceName);
+  const slug = normalizeStr(data.serviceSlug);
 
-  // If resourceType is aws_vpc or empty, check if resourceName or slug clarifies the specific resource
-  if (rName === 'subnet' || slug === 'subnet') return 'aws_subnet';
-  if (rName.includes('security-group') || rName.includes('security_group')) return 'aws_security_group';
-  if (rName.includes('route-table') || rName.includes('route_table')) return 'aws_route_table';
-  if (rName.includes('internet-gateway') || rName.includes('igw')) return 'aws_internet_gateway';
-  if (rName.includes('nat-gateway') || rName.includes('nat')) return 'aws_nat_gateway';
-  if (rName.includes('network-acl') || rName.includes('nacl')) return 'aws_network_acl';
-  if (rName.includes('vpc-endpoint')) return 'aws_vpc_endpoint';
-  if (rName.includes('ec2') || rName.includes('instance') || slug === 'amazon-ec2') return 'aws_instance';
-  if (rName.includes('rds') || rName.includes('database') || slug === 'amazon-rds') return 'aws_db_instance';
-  if (rName.includes('lambda') || slug === 'aws-lambda') return 'aws_lambda_function';
+  // Containers
+  if (rType === 'cloud' || rName === 'cloud' || rType === 'aws_cloud') return 'aws_cloud';
+  if (rType === 'region' || rName === 'region' || rType === 'aws_region') return 'aws_region';
+  if (rType === 'availability_zone' || rType === 'az' || rName.includes('availability_zone')) return 'aws_availability_zone';
+  if (rType === 'cluster' || rType === 'ecs_cluster' || rName.includes('ecs_cluster')) return 'aws_ecs_cluster';
+  if (rType === 'subnet' || rName.includes('subnet') || slug === 'subnet') return 'aws_subnet';
 
-  if (rType === 'aws_vpc' || rType === 'vpc' || rName === 'vpc' || slug === 'amazon-vpc' || slug === 'vpc') return 'aws_vpc';
+  // Compute & Database
+  if (rType === 'instance' || rType === 'ec2' || rName.includes('instance') || rName.includes('ec2') || slug === 'ec2') return 'aws_instance';
+  if (rType === 'db_instance' || rType === 'rds' || rType === 'database' || rName.includes('rds') || rName.includes('database') || slug === 'rds') return 'aws_db_instance';
+  if (rType === 'lambda_function' || rType === 'lambda' || rName.includes('lambda') || slug === 'lambda') return 'aws_lambda_function';
+  if (rType === 'ecs_service' || rName.includes('ecs_service')) return 'aws_ecs_service';
+  if (rType === 'ecs_task' || rName.includes('ecs_task')) return 'aws_ecs_task';
 
-  if (rType) return rType;
-  if (rName) return rName;
-  return slug;
+  // Networking
+  if (rType === 'security_group' || rName.includes('security_group')) return 'aws_security_group';
+  if (rType === 'route_table' || rName.includes('route_table')) return 'aws_route_table';
+  if (rType === 'internet_gateway' || rType === 'igw' || rName.includes('internet_gateway') || rName.includes('igw')) return 'aws_internet_gateway';
+  if (rType === 'nat_gateway' || rType === 'nat' || rName.includes('nat_gateway') || rName.includes('nat')) return 'aws_nat_gateway';
+  if (rType === 'network_acl' || rType === 'nacl' || rName.includes('network_acl') || rName.includes('nacl')) return 'aws_network_acl';
+  if (rType === 'vpc_endpoint' || rName.includes('vpc_endpoint')) return 'aws_vpc_endpoint';
+  if (rType === 'lb' || rType === 'alb' || rType === 'application_load_balancer' || rType === 'load_balancer' || rName.includes('load_balancer') || rName.includes('alb')) return 'aws_lb';
+  if (rType === 'nlb' || rType === 'network_load_balancer' || rName.includes('nlb')) return 'aws_nlb';
+
+  // Storage & Serverless & Others
+  if (rType === 's3_bucket' || rType === 's3' || rName.includes('s3') || slug === 's3') return 'aws_s3_bucket';
+  if (rType === 'dynamodb_table' || rType === 'dynamodb' || rName.includes('dynamodb') || slug === 'dynamodb') return 'aws_dynamodb_table';
+  if (rType === 'api_gateway_rest_api' || rType === 'api_gateway' || rType === 'apigateway' || rName.includes('api_gateway') || slug === 'api_gateway') return 'aws_api_gateway_rest_api';
+  if (rType === 'cloudfront_distribution' || rType === 'cloudfront' || rName.includes('cloudfront') || slug === 'cloudfront') return 'aws_cloudfront_distribution';
+  if (rType === 'route53_zone' || rType === 'route53' || rName.includes('route53') || slug === 'route53') return 'aws_route53_zone';
+  if (rType === 'cloudwatch_metric_alarm' || rType === 'cloudwatch' || rName.includes('cloudwatch') || slug === 'cloudwatch') return 'aws_cloudwatch_metric_alarm';
+  if (rType === 'sns_topic' || rType === 'sns' || rName.includes('sns') || slug === 'sns') return 'aws_sns_topic';
+  if (rType === 'sqs_queue' || rType === 'sqs' || rName.includes('sqs') || slug === 'sqs') return 'aws_sqs_queue';
+  if (rType === 'iam_role' || rType === 'iam' || rName.includes('iam') || slug === 'iam') return 'aws_iam_role';
+  if (rType === 'kms_key' || rType === 'kms' || rName.includes('kms') || slug === 'kms') return 'aws_kms_key';
+  if (rType === 'autoscaling_group' || rType === 'asg' || rName.includes('autoscaling') || slug === 'autoscaling') return 'aws_autoscaling_group';
+  if (rType === 'elasticache_cluster' || rType === 'elasticache' || rType === 'redis' || rName.includes('elasticache')) return 'aws_elasticache_cluster';
+  if (rType === 'opensearch_domain' || rType === 'opensearch' || rType === 'elasticsearch' || rName.includes('opensearch')) return 'aws_opensearch_domain';
+  if (rType === 'redshift_cluster' || rType === 'redshift' || rName.includes('redshift')) return 'aws_redshift_cluster';
+
+  // VPC fallback
+  if (rType === 'vpc' || rName === 'vpc' || slug === 'vpc') return 'aws_vpc';
+
+  if (data.resourceType) return data.resourceType;
+  return 'aws_unknown';
 }
 
 // Explicit parent-child compatibility matrix
 export const ALLOWED_CHILDREN_BY_PARENT: Record<string, Set<string>> = {
+  aws_cloud: new Set([
+    '*',
+  ]),
+  aws_region: new Set([
+    '*',
+  ]),
+  aws_resource_group: new Set([
+    '*',
+  ]),
   aws_vpc: new Set([
     'aws_subnet',
+    'aws_availability_zone',
     'aws_security_group',
     'aws_route_table',
     'aws_internet_gateway',
     'aws_nat_gateway',
     'aws_network_acl',
     'aws_vpc_endpoint',
-    'aws_availability_zone',
+    'aws_lb',
+    'aws_alb',
+    'aws_nlb',
+    'aws_instance',
+    'aws_db_instance',
+    'aws_ecs_cluster',
+  ]),
+  aws_availability_zone: new Set([
+    'aws_subnet',
+    'aws_instance',
+    'aws_db_instance',
+    'aws_lb',
+    'aws_alb',
+    'aws_nlb',
+    'aws_nat_gateway',
   ]),
   aws_subnet: new Set([
     'aws_instance',
@@ -147,31 +172,6 @@ export const ALLOWED_CHILDREN_BY_PARENT: Record<string, Set<string>> = {
     'aws_ecs_service',
     'aws_ecs_task',
     'aws_instance',
-  ]),
-  aws_availability_zone: new Set([
-    'aws_subnet',
-    'aws_instance',
-    'aws_db_instance',
-  ]),
-  aws_cloud: new Set([
-    'aws_region',
-    'aws_vpc',
-    'aws_s3_bucket',
-    'aws_cloudfront_distribution',
-    'aws_route53_zone',
-    'aws_iam_role',
-    'aws_resource_group',
-  ]),
-  aws_region: new Set([
-    'aws_vpc',
-    'aws_availability_zone',
-    'aws_s3_bucket',
-    'aws_dynamodb_table',
-    'aws_resource_group',
-  ]),
-  aws_resource_group: new Set([
-    // Resource groups can contain all standard resources
-    '*',
   ]),
 };
 
