@@ -3,6 +3,7 @@ import type { ApiResponse } from '../../types/api.types.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { TerraformGenerator } from './terraform-generator.service.js';
+import type { ExportMode } from './terraform.types.js';
 
 function requireAuthenticatedUserId(req: Request): string {
   if (!req.user) {
@@ -15,6 +16,7 @@ interface TerraformGenerateResponse {
   files: Array<{ filename: string; content: string }>;
   hcl: string;
   totalFiles: number;
+  mode: ExportMode;
   issues: Array<{
     nodeId: string;
     resourceType: string;
@@ -27,7 +29,11 @@ export const handleGenerateTerraform = asyncHandler(async (req: Request, res: Re
   const userId = requireAuthenticatedUserId(req);
   const { id } = req.params;
 
-  const { files, hcl, issues } = await TerraformGenerator.generateAndSave(id, userId);
+  // Extract export mode from request body or query parameter
+  const rawMode = req.body?.mode || req.query?.mode;
+  const mode: ExportMode = rawMode === 'modular' ? 'modular' : 'standard';
+
+  const { files, hcl, issues, mode: generatedMode } = await TerraformGenerator.generateAndSave(id, userId, { mode });
 
   const response: ApiResponse<TerraformGenerateResponse> = {
     success: true,
@@ -35,6 +41,7 @@ export const handleGenerateTerraform = asyncHandler(async (req: Request, res: Re
       files,
       hcl,
       totalFiles: files.length,
+      mode: generatedMode,
       issues,
     },
     timestamp: new Date().toISOString(),

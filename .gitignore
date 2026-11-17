@@ -41,3 +41,6 @@ postgres_data/
 coverage/
 frontend/coverage/
 backend/coverage/
+
+
+AGENT_HANDOFF_GUIDE.md

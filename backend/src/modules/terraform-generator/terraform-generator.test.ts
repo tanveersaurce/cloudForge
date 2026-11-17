@@ -515,4 +515,213 @@ describe('Terraform Generator', () => {
       expect(allHcl).toContain('resource "aws_acm_certificate"');
     });
   });
+
+  describe('Modular Terraform Generator (Phase 08 Extended)', () => {
+    it('generates standard export when mode is standard or omitted', () => {
+      const nodes: TestNode[] = [
+        { id: 'v1', resourceType: 'aws_vpc', label: 'VPC', metadata: { cidr_block: '10.0.0.0/16' } },
+      ];
+      const result = TerraformGenerator.generate('Standard Arch', 'us-east-1', nodes, []);
+      expect(result.mode).toBe('standard');
+      expect(result.files.some((f) => f.filename.startsWith('vpc/'))).toBe(true);
+      expect(result.files.some((f) => f.filename.startsWith('modules/'))).toBe(false);
+    });
+
+    it('generates complete modular directory structure in modular mode', () => {
+      const nodes: TestNode[] = [
+        { id: 'v1', resourceType: 'aws_vpc', label: 'Main VPC', metadata: { cidr_block: '10.0.0.0/16' } },
+        { id: 's1', resourceType: 'aws_subnet', label: 'Public Subnet 1', metadata: { cidr_block: '10.0.1.0/24', map_public_ip_on_launch: true } },
+        { id: 's2', resourceType: 'aws_subnet', label: 'Private Subnet 1', metadata: { cidr_block: '10.0.2.0/24' } },
+        { id: 'i1', resourceType: 'aws_instance', label: 'App Server', metadata: { ami: 'ami-12345678' } },
+        { id: 'db1', resourceType: 'aws_db_instance', label: 'Postgres DB', metadata: { engine: 'postgres' } },
+        { id: 'b1', resourceType: 'aws_s3_bucket', label: 'Static Assets_Bucket' },
+      ];
+      const edges: TestEdge[] = [
+        { id: 'e1', source: 'v1', target: 's1', relationshipType: 'contains' },
+        { id: 'e2', source: 'v1', target: 's2', relationshipType: 'contains' },
+        { id: 'e3', source: 's1', target: 'i1', relationshipType: 'contains' },
+        { id: 'e4', source: 's2', target: 'db1', relationshipType: 'contains' },
+      ];
+
+      const { files, issues, mode } = TerraformGenerator.generate(
+        'Enterprise Stack',
+        'us-east-1',
+        nodes,
+        edges,
+        { mode: 'modular' },
+      );
+
+      expect(mode).toBe('modular');
+      const fileNames = files.map((f) => f.filename);
+
+      // Root files
+      expect(fileNames).toContain('main.tf');
+      expect(fileNames).toContain('provider.tf');
+      expect(fileNames).toContain('versions.tf');
+      expect(fileNames).toContain('variables.tf');
+      expect(fileNames).toContain('outputs.tf');
+      expect(fileNames).toContain('terraform.tfvars.example');
+      expect(fileNames).toContain('.gitignore');
+      expect(fileNames).toContain('README.md');
+      expect(fileNames).toContain('environments/dev/terraform.tfvars.example');
+      expect(fileNames).toContain('environments/dev/README.md');
+
+      // Relevant child modules exist
+      expect(fileNames).toContain('modules/networking/main.tf');
+      expect(fileNames).toContain('modules/networking/variables.tf');
+      expect(fileNames).toContain('modules/networking/outputs.tf');
+
+      expect(fileNames).toContain('modules/compute/main.tf');
+      expect(fileNames).toContain('modules/compute/variables.tf');
+      expect(fileNames).toContain('modules/compute/outputs.tf');
+
+      expect(fileNames).toContain('modules/database/main.tf');
+      expect(fileNames).toContain('modules/database/variables.tf');
+      expect(fileNames).toContain('modules/database/outputs.tf');
+
+      expect(fileNames).toContain('modules/storage/main.tf');
+      expect(fileNames).toContain('modules/storage/variables.tf');
+      expect(fileNames).toContain('modules/storage/outputs.tf');
+
+      // Unused modules must NOT be created
+      expect(fileNames.some((f) => f.startsWith('modules/ai-agent/'))).toBe(false);
+      expect(fileNames.some((f) => f.startsWith('modules/chat/'))).toBe(false);
+      expect(fileNames.some((f) => f.startsWith('modules/video-processing/'))).toBe(false);
+      expect(fileNames.some((f) => f.startsWith('modules/cdn/'))).toBe(false);
+      expect(fileNames.some((f) => f.startsWith('modules/monitoring/'))).toBe(false);
+
+      // Root main.tf orchestrates child modules with module blocks
+      const rootMain = files.find((f) => f.filename === 'main.tf')?.content ?? '';
+      expect(rootMain).toContain('module "networking" {');
+      expect(rootMain).toContain('source = "./modules/networking"');
+      expect(rootMain).toContain('module "compute" {');
+      expect(rootMain).toContain('source = "./modules/compute"');
+      expect(rootMain).toContain('vpc_id       = module.networking.vpc_id');
+      expect(rootMain).toContain('subnet_ids   = module.networking.public_subnet_ids');
+      expect(rootMain).toContain('module "database" {');
+      expect(rootMain).toContain('source = "./modules/database"');
+      expect(rootMain).toContain('module "storage" {');
+      expect(rootMain).toContain('source = "./modules/storage"');
+
+      // Database uses DB Subnet Group and sensitive password
+      const dbMain = files.find((f) => f.filename === 'modules/database/main.tf')?.content ?? '';
+      expect(dbMain).toContain('resource "aws_db_subnet_group" "main"');
+      expect(dbMain).toContain('db_subnet_group_name = aws_db_subnet_group.main.name');
+      expect(dbMain).not.toContain('subnet_id =');
+
+      const dbVars = files.find((f) => f.filename === 'modules/database/variables.tf')?.content ?? '';
+      expect(dbVars).toContain('sensitive = true');
+
+      // Storage sanitizes underscores in bucket name
+      const storageMain = files.find((f) => f.filename === 'modules/storage/main.tf')?.content ?? '';
+      expect(storageMain).toContain('static-assets-bucket');
+      expect(storageMain).not.toContain('Static Assets_Bucket');
+
+      // No errors for valid architecture
+      const errors = issues.filter((i) => i.severity === 'error');
+      expect(errors).toHaveLength(0);
+    });
+
+    it('generates Bedrock, CloudFront, WebSocket, and MediaConvert modules when present', () => {
+      const nodes: TestNode[] = [
+        { id: 'b1', resourceType: 'aws_bedrock_agent', label: 'Support AI' },
+        { id: 'c1', resourceType: 'aws_cloudfront_distribution', label: 'App CDN' },
+        { id: 'ws1', resourceType: 'aws_apigatewayv2_api', label: 'Chat WS', metadata: { protocol_type: 'WEBSOCKET' } },
+        { id: 'mc1', resourceType: 'aws_media_convert', label: 'Transcoder' },
+        { id: 'mon1', resourceType: 'aws_cloudwatch_metric_alarm', label: 'CPU Alarm' },
+      ];
+
+      const { files, mode } = TerraformGenerator.generate(
+        'Advanced Services Stack',
+        'us-east-1',
+        nodes,
+        [],
+        { mode: 'modular' },
+      );
+
+      expect(mode).toBe('modular');
+      const fileNames = files.map((f) => f.filename);
+
+      // AI Agent module with IAM execution role & foundation model
+      expect(fileNames).toContain('modules/ai-agent/main.tf');
+      const aiMain = files.find((f) => f.filename === 'modules/ai-agent/main.tf')?.content ?? '';
+      expect(aiMain).toContain('resource "aws_bedrockagent_agent"');
+      expect(aiMain).toContain('resource "aws_iam_role" "bedrock_agent_role"');
+      expect(aiMain).toContain('foundation_model = var.bedrock_model_id');
+
+      // CDN module with complete origin, cache behavior, and restrictions
+      expect(fileNames).toContain('modules/cdn/main.tf');
+      const cdnMain = files.find((f) => f.filename === 'modules/cdn/main.tf')?.content ?? '';
+      expect(cdnMain).toContain('origin {');
+      expect(cdnMain).toContain('default_cache_behavior {');
+      expect(cdnMain).toContain('restrictions {');
+      expect(cdnMain).toContain('viewer_certificate {');
+
+      // Chat WebSocket module
+      expect(fileNames).toContain('modules/chat/main.tf');
+      const chatMain = files.find((f) => f.filename === 'modules/chat/main.tf')?.content ?? '';
+      expect(chatMain).toContain('resource "aws_apigatewayv2_api"');
+      expect(chatMain).toContain('protocol_type = "WEBSOCKET"');
+
+      // Video processing module
+      expect(fileNames).toContain('modules/video-processing/main.tf');
+      const videoMain = files.find((f) => f.filename === 'modules/video-processing/main.tf')?.content ?? '';
+      expect(videoMain).toContain('resource "aws_media_convert_queue"');
+      expect(videoMain).toContain('resource "aws_sqs_queue"');
+
+      // Monitoring module
+      expect(fileNames).toContain('modules/monitoring/main.tf');
+      const monMain = files.find((f) => f.filename === 'modules/monitoring/main.tf')?.content ?? '';
+      expect(monMain).toContain('resource "aws_cloudwatch_metric_alarm"');
+      expect(monMain).toContain('resource "aws_cloudwatch_log_group"');
+
+      // Root main.tf calls them
+      const rootMain = files.find((f) => f.filename === 'main.tf')?.content ?? '';
+      expect(rootMain).toContain('module "ai_agent"');
+      expect(rootMain).toContain('module "cdn"');
+      expect(rootMain).toContain('module "chat"');
+      expect(rootMain).toContain('module "video_processing"');
+      expect(rootMain).toContain('module "monitoring"');
+    });
+
+    it('handles empty architecture gracefully without creating empty modules', () => {
+      const { files, issues, mode } = TerraformGenerator.generate(
+        'Empty Arch',
+        'us-east-1',
+        [],
+        [],
+        { mode: 'modular' },
+      );
+
+      expect(mode).toBe('modular');
+      expect(issues).toHaveLength(0);
+      const fileNames = files.map((f) => f.filename);
+
+      // Root files exist
+      expect(fileNames).toContain('main.tf');
+      expect(fileNames).toContain('provider.tf');
+      expect(fileNames).toContain('versions.tf');
+      expect(fileNames).toContain('variables.tf');
+      expect(fileNames).toContain('outputs.tf');
+
+      // No child module directories
+      expect(fileNames.some((f) => f.startsWith('modules/'))).toBe(false);
+
+      const mainContent = files.find((f) => f.filename === 'main.tf')?.content ?? '';
+      expect(mainContent).toContain('No cloud resources found in this architecture');
+    });
+
+    it('filters visual boundary containers in modular mode', () => {
+      const nodes: TestNode[] = [
+        { id: 'c1', resourceType: 'aws_cloud', label: 'Cloud Global Scope', metadata: { isBoundary: true } },
+        { id: 'r1', resourceType: 'aws_region', label: 'Region us-east-1', metadata: { isBoundary: true } },
+        { id: 'v1', resourceType: 'aws_vpc', label: 'VPC', metadata: { cidr_block: '10.0.0.0/16' } },
+      ];
+      const { files } = TerraformGenerator.generate('Boundary Arch', 'us-east-1', nodes, [], { mode: 'modular' });
+      const allContent = files.map((f) => f.content).join('\n');
+      expect(allContent).not.toContain('resource "aws_cloud"');
+      expect(allContent).not.toContain('resource "aws_region"');
+      expect(allContent).toContain('resource "aws_vpc"');
+    });
+  });
 });
